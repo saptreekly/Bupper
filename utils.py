@@ -1,6 +1,7 @@
 import numpy as np
 from typing import List, Tuple, Dict, Optional
 from dataclasses import dataclass
+import random
 
 @dataclass
 class TimeWindow:
@@ -17,6 +18,58 @@ class TimeWindow:
         """Calculate departure time considering waiting and service"""
         start_time = max(self.earliest, arrival_time)
         return start_time + self.service_time
+
+def generate_random_points(n_points: int, 
+                         min_coord: float = 0.0,
+                         max_coord: float = 100.0) -> np.ndarray:
+    """
+    Generate random points within specified bounds
+
+    Args:
+        n_points: Number of points to generate
+        min_coord: Minimum coordinate value
+        max_coord: Maximum coordinate value
+
+    Returns:
+        np.ndarray: Array of random points
+    """
+    return np.random.uniform(min_coord, max_coord, size=(n_points, 2))
+
+def generate_random_time_windows(n_points: int,
+                               horizon: float = 100.0,
+                               min_window: float = 10.0,
+                               max_window: float = 30.0,
+                               min_service: float = 1.0,
+                               max_service: float = 5.0) -> Dict[int, TimeWindow]:
+    """
+    Generate random time windows for points
+
+    Args:
+        n_points: Number of points
+        horizon: Time horizon for planning
+        min_window: Minimum time window width
+        max_window: Maximum time window width
+        min_service: Minimum service time
+        max_service: Maximum service time
+
+    Returns:
+        Dict[int, TimeWindow]: Time windows for each point
+    """
+    time_windows = {}
+
+    # Skip depot (index 0)
+    for i in range(1, n_points):
+        # Generate random window start
+        earliest = random.uniform(0, horizon - max_window)
+        # Generate random window width
+        window_width = random.uniform(min_window, max_window)
+        latest = min(earliest + window_width, horizon)
+        # Generate random service time
+        service_time = random.uniform(min_service, max_service)
+
+        time_windows[i] = TimeWindow(earliest, latest, service_time)
+
+    return time_windows
 
 def validate_points(points: List[Tuple[float, float]]) -> np.ndarray:
     """
