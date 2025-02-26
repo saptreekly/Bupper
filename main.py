@@ -109,6 +109,10 @@ def main():
                       max_parallel_ants=parallel_ants,
                       verbose=verbose_logging)  # Add verbosity control
 
+            # Store demands and capacity for verification
+            aco.demands = [1.0] * len(global_points)  # Simple demand model
+            aco.capacity = vehicle_capacity
+
             # Solve for each cluster
             all_routes = []
             all_lengths = []

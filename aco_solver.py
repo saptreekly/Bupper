@@ -7,6 +7,100 @@ import time
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+def verify_and_fix_routes(routes: List[List[int]], 
+                         n_points: int,
+                         distances: np.ndarray,
+                         demands: List[float],
+                         capacity: float,
+                         time_windows: Optional[Dict[int, TimeWindow]] = None,
+                         speed: float = 1.0) -> List[List[int]]:
+    """
+    Verify all nodes are included in routes and fix any missing nodes.
+    """
+    # Collect all assigned nodes (excluding depot)
+    assigned = set()
+    for route in routes:
+        assigned.update(set(route[1:-1]))  # Exclude depot (0) at start and end
+
+    # Find missing nodes
+    all_nodes = set(range(1, n_points))  # All nodes except depot
+    missing = all_nodes - assigned
+
+    if missing:
+        import streamlit as st
+        st.write(f"\n=== Missing Nodes Detected ===")
+        st.write(f"Found {len(missing)} unassigned nodes: {missing}")
+
+        # Try to insert each missing node
+        for node in missing:
+            best_route_idx = -1
+            best_position = -1
+            min_cost_increase = float('inf')
+
+            # Try inserting into each route
+            for route_idx, route in enumerate(routes):
+                if len(route) <= 2:  # Skip empty routes (depot-depot)
+                    continue
+
+                # Check capacity constraint first
+                route_demand = sum(demands[i] for i in route[1:-1])
+                if route_demand + demands[node] > capacity:
+                    continue
+
+                # Try each insertion position (excluding start/end depot positions)
+                for pos in range(1, len(route)):
+                    # Create candidate route
+                    new_route = route[:pos] + [node] + route[pos:]
+
+                    # Calculate cost increase
+                    old_cost = sum(distances[route[i]][route[i+1]] 
+                                 for i in range(len(route)-1))
+                    new_cost = sum(distances[new_route[i]][new_route[i+1]] 
+                                 for i in range(len(new_route)-1))
+                    cost_increase = new_cost - old_cost
+
+                    # Check time window feasibility
+                    feasible = True
+                    if time_windows:
+                        arrival_times = {}
+                        current_time = 0.0
+
+                        for i in range(len(new_route) - 1):
+                            current = new_route[i]
+                            next_node = new_route[i + 1]
+                            travel_time = distances[current][next_node] / speed
+
+                            if current in time_windows:
+                                tw = time_windows[current]
+                                if current_time < tw.earliest:
+                                    current_time = tw.earliest
+                                elif current_time > tw.latest:
+                                    feasible = False
+                                    break
+                                current_time += tw.service_time
+
+                            current_time += travel_time
+                            arrival_times[next_node] = current_time
+
+                    if feasible and cost_increase < min_cost_increase:
+                        min_cost_increase = cost_increase
+                        best_route_idx = route_idx
+                        best_position = pos
+
+            if best_route_idx >= 0:
+                # Insert node at best position
+                route = routes[best_route_idx]
+                routes[best_route_idx] = (
+                    route[:best_position] + [node] + route[best_position:]
+                )
+                st.write(f"Inserted node {node} into route {best_route_idx} "
+                        f"at position {best_position}")
+                st.write(f"Cost increase: {min_cost_increase:.2f}")
+            else:
+                st.error(f"Could not find feasible insertion for node {node}!")
+
+    return routes
+
 @dataclass
 class SolutionMetrics:
     """Track solution improvement metrics"""
@@ -340,6 +434,8 @@ class ACO:
     def solve(self, 
              points: np.ndarray,
              route_nodes: List[int],
+             demands: List[float],
+             capacity: float,
              n_iterations: int = 100,
              time_windows: Optional[Dict[int, TimeWindow]] = None,
              alns_frequency: int = 10) -> Tuple[List[int], float, Dict[int, float]]:
@@ -440,6 +536,15 @@ class ACO:
                 computation_time=iteration_time,
                 improvement_rate=improvement_rate
             ))
+
+        # Verify all nodes are included
+        if hasattr(self, 'demands') and hasattr(self, 'capacity'):
+            best_path = verify_and_fix_routes(
+                [best_path], len(points), distances, 
+                self.demands, self.capacity, time_windows, self.speed)[0]
+            # Recalculate metrics after fixes
+            best_arrival_times = self.calculate_arrival_times(best_path, distances, time_windows)
+            best_cost = self.calculate_total_cost(best_path, distances, best_arrival_times, time_windows)
 
         # Print final summary
         total_time = time.time() - start_time
