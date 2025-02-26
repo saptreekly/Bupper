@@ -65,20 +65,21 @@ def main():
                 max_window=max_window
             )
 
-            st.write("Debug: Generated points array shape:", points.shape)
+            st.write("\n=== Points Array Debug Info ===")
+            st.write(f"Global points array shape: {points.shape}")
 
             # Cluster points
             with st.spinner("Clustering points..."):
                 route_indices, labels = cluster_points(points, n_vehicles)
 
-            st.write("Debug: Initial route indices:")
+            st.write("\n=== Route Indices Debug Info ===")
             for i, route in enumerate(route_indices):
-                st.write(f"Route {i}: {route}")
+                st.write(f"Initial route {i}: {route}")
 
             # Initialize ACO solver
-            aco = ACO(base_evaporation=0.15,  # Increased from 0.1
-                     alpha=1.5,  # Increased from 1.0
-                     beta=2.5,  # Increased from 2.0
+            aco = ACO(base_evaporation=0.15,
+                     alpha=1.5,
+                     beta=2.5,
                      evap_increase=0.05,
                      stagnation_limit=5,
                      speed=vehicle_speed,
@@ -117,9 +118,9 @@ def main():
                     all_lengths.append(cost)
                     all_arrival_times.append(arrival_times)
 
-                st.write("Debug: Final routes before visualization:")
-                for i, route in enumerate(all_routes):
-                    st.write(f"Route {i}: {route}")
+            st.write("\n=== Final Routes Debug Info ===")
+            for i, route in enumerate(all_routes):
+                st.write(f"Final route {i}: {route}")
 
             # Display results
             st.subheader("Results")
@@ -142,11 +143,10 @@ def main():
                 st.metric("Total Cost", round(sum(all_lengths), 2))
                 st.metric("Speed", vehicle_speed)
 
-            # Visualization - Pass both local cluster points and full global array
+            # Visualization - Always use full global points array
             st.subheader("Route Visualization")
             plot_routes(points, all_routes, labels,
-                     "Vehicle Routes (K-means + ACO)",
-                     global_points=points)  # Pass full points array as backup
+                     "Vehicle Routes (K-means + ACO)")
 
             # Time window analysis
             if time_windows:
