@@ -132,10 +132,10 @@ def main():
                 st.metric("Total Cost", round(sum(all_lengths), 2))
                 st.metric("Speed", vehicle_speed)
 
-            # Visualization
+            # Visualization - Always use full global points array since routes use global indices
             st.subheader("Route Visualization")
             plot_routes(points, all_routes, labels,
-                     "Vehicle Routes (K-means + ACO + 3-opt)")
+                     "Vehicle Routes (K-means + ACO)")
 
             # Time window analysis
             if time_windows:
