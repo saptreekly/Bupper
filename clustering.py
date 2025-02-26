@@ -1,38 +1,54 @@
 import numpy as np
 from typing import List, Tuple, Dict, Optional
 from sklearn.cluster import KMeans
-import streamlit as st # Added import for streamlit logging
+import streamlit as st
+import math
 
+def calculate_min_vehicles(n_points: int,
+                         demands: List[float],
+                         capacity: float,
+                         min_vehicles: int = 2,
+                         max_vehicles: int = 10) -> int:
+    """Calculate minimum number of vehicles needed based on demands and capacity."""
+    # Sum all demands (excluding depot at index 0)
+    total_demand = sum(demands[1:])
 
-def calculate_distance_to_route(point: np.ndarray, 
-                              route_points: np.ndarray) -> float:
-    """Calculate minimum distance from a point to any point in a route."""
-    if len(route_points) == 0:
-        return float('inf')
-    distances = np.sqrt(np.sum((route_points - point) ** 2, axis=1))
-    return np.min(distances)
+    # Calculate theoretical minimum vehicles needed
+    min_vehicles_demand = math.ceil(total_demand / capacity)
 
-def cluster_points(points: np.ndarray, n_clusters: int) -> Tuple[List[List[int]], List[int]]:
+    # Consider number of points (aim for reasonable route sizes)
+    points_per_vehicle = 30  # Target max points per vehicle
+    min_vehicles_size = math.ceil((n_points - 1) / points_per_vehicle)
+
+    # Take maximum of both constraints
+    required_vehicles = max(min_vehicles_demand, min_vehicles_size)
+
+    # Clamp to acceptable range
+    return max(min_vehicles, min(required_vehicles, max_vehicles))
+
+def cluster_points(points: np.ndarray, 
+                  n_clusters: Optional[int] = None,
+                  demands: Optional[List[float]] = None,
+                  capacity: Optional[float] = None) -> Tuple[List[List[int]], List[int]]:
     """
-    Cluster points using K-means, ensuring depot inclusion and complete coverage
-
-    Args:
-        points: Array of (x, y) coordinates
-        n_clusters: Number of clusters (vehicles)
-
-    Returns:
-        route_indices: List of lists containing global node indices for each route
-        labels: Global array of labels (one per point, including depot)
+    Cluster points using K-means with automatic vehicle count determination
     """
+    # Calculate minimum required vehicles if not specified
+    if n_clusters is None and demands is not None and capacity is not None:
+        n_clusters = calculate_min_vehicles(
+            len(points), demands, capacity
+        )
+        st.write(f"\nAutomatically determined {n_clusters} vehicles needed")
+    elif n_clusters is None:
+        n_clusters = max(2, min(10, (len(points) - 1) // 30))
+        st.write(f"\nUsing default of {n_clusters} vehicles based on problem size")
+
     # Separate depot and delivery points
     delivery_points = points[1:]  # Skip depot (index 0)
 
     # Fit K-means on delivery points only
     kmeans = KMeans(n_clusters=n_clusters, random_state=42)
     delivery_labels = kmeans.fit_predict(delivery_points)
-
-    # Create full labels array with depot label (-1) and delivery point labels
-    labels = np.concatenate([[-1], delivery_labels])
 
     # Initialize route construction
     route_indices = [[] for _ in range(n_clusters)]
@@ -42,124 +58,82 @@ def cluster_points(points: np.ndarray, n_clusters: int) -> Tuple[List[List[int]]
     st.write("\n=== Initial Cluster Assignments ===")
     for i in range(n_clusters):
         cluster_nodes = [j + 1 for j, label in enumerate(delivery_labels) if label == i]
-        st.write(f"Cluster {i} initial nodes: {cluster_nodes}")
         route_indices[i].extend(cluster_nodes)
         assigned_nodes.update(cluster_nodes)
 
-    # Log initial assignments
-    all_nodes = set(range(len(points)))
-    initially_unassigned = all_nodes - assigned_nodes
-    if initially_unassigned:
-        st.write(f"\nWarning: {len(initially_unassigned)} nodes not initially assigned: {initially_unassigned}")
-
-    # Ensure depot is at start and end of each route
-    for i in range(n_clusters):
-        if not route_indices[i]:  # Empty route
-            route_indices[i] = [0, 0]  # Minimal route: depot-depot
-            st.write(f"Created empty route for cluster {i}")
-        else:
-            # Add depot at start and end if not present
-            if route_indices[i][0] != 0:
-                route_indices[i].insert(0, 0)
-            if route_indices[i][-1] != 0:
-                route_indices[i].append(0)
-            st.write(f"Route {i} with depot: {route_indices[i]}")
-
     # Check for unassigned nodes
+    all_nodes = set(range(len(points)))
     unassigned = all_nodes - assigned_nodes
+
     if unassigned:
-        st.write(f"\nFound {len(unassigned)} unassigned nodes: {unassigned}")
-
-        # Assign each unassigned node to nearest route
+        st.write(f"\nFound {len(unassigned)} unassigned nodes")
+        # Try to assign nodes to nearest feasible route
         for node in unassigned:
-            node_point = points[node]
-            best_route = 0
+            best_route = -1
             min_distance = float('inf')
+            node_point = points[node]
 
-            # Find closest route
             for i, route in enumerate(route_indices):
+                # Skip empty routes
+                if not route:
+                    continue
+
+                # Check capacity if available
+                if demands and capacity:
+                    route_demand = sum(demands[n] for n in route)
+                    if route_demand + demands[node] > capacity * 1.1:  # Allow 10% overflow
+                        continue
+
+                # Calculate distance to route centroid
                 route_points = points[route]
-                dist = calculate_distance_to_route(node_point, route_points)
+                centroid = np.mean(route_points, axis=0)
+                dist = np.sqrt(np.sum((node_point - centroid) ** 2))
+
                 if dist < min_distance:
                     min_distance = dist
                     best_route = i
 
-            # Insert node before final depot
-            route_indices[best_route].insert(-1, node)
-            st.write(f"Assigned node {node} to route {best_route} (distance: {min_distance:.2f})")
+            if best_route >= 0:
+                # Insert node before final depot if present
+                if route_indices[best_route] and route_indices[best_route][-1] == 0:
+                    route_indices[best_route].insert(-1, node)
+                else:
+                    route_indices[best_route].append(node)
+                st.write(f"Assigned node {node} to route {best_route}")
+            else:
+                # Create new route if necessary and possible
+                if len(route_indices) < max_vehicles:
+                    new_route = [0, node, 0]  # depot -> node -> depot
+                    route_indices.append(new_route)
+                    st.write(f"Created new route for node {node}")
+                else:
+                    st.error(f"Could not assign node {node} - consider increasing vehicle count")
 
-    # Handle small routes (merge or ensure minimal viable route)
-    MIN_ROUTE_SIZE = 3  # Depot + at least one delivery + depot
-    for i in range(n_clusters):
-        if len(route_indices[i]) < MIN_ROUTE_SIZE:
-            if len(route_indices[i]) == 2 and route_indices[i][0] == 0 and route_indices[i][1] == 0:
-                # Empty route, can be left as is
-                st.write(f"Route {i} is empty (depot-only)")
-                continue
+    # Ensure depot at start/end of each route
+    for i in range(len(route_indices)):
+        if not route_indices[i]:  # Empty route
+            route_indices[i] = [0, 0]
+        else:
+            if route_indices[i][0] != 0:
+                route_indices[i].insert(0, 0)
+            if route_indices[i][-1] != 0:
+                route_indices[i].append(0)
 
-            # Try to merge with nearest route
-            route_points = points[route_indices[i]]
-            best_merge = -1
-            min_distance = float('inf')
-
-            for j in range(n_clusters):
-                if i != j and len(route_indices[j]) >= MIN_ROUTE_SIZE:
-                    other_points = points[route_indices[j]]
-                    dist = calculate_distance_to_route(route_points[1], other_points)  # Compare first delivery point
-                    if dist < min_distance:
-                        min_distance = dist
-                        best_merge = j
-
-            if best_merge >= 0:
-                # Merge routes
-                nodes_to_merge = route_indices[i][1:-1]  # Skip depot at start and end
-                route_indices[best_merge][:-1].extend(nodes_to_merge)  # Insert before final depot
-                route_indices[i] = [0, 0]  # Convert to empty route
-                st.write(f"Merged small route {i} into route {best_merge}")
-                st.write(f"Updated route {best_merge}: {route_indices[best_merge]}")
-
-    # Verify and log final routes
-    st.write("\n=== Final Route Verification ===")
-    all_assigned = set()
-
+    # Create full labels array
+    labels = np.zeros(len(points), dtype=int)
     for i, route in enumerate(route_indices):
-        st.write(f"\nRoute {i}: {route}")
-        n_delivery = len([n for n in route if n != 0])
-        st.write(f"- Delivery points: {n_delivery}")
-        st.write(f"- Total length: {len(route)}")
+        for node in route[1:-1]:  # Skip depot
+            labels[node] = i
 
-        # Verify depot at start and end
-        if route[0] != 0 or route[-1] != 0:
-            st.error(f"Route {i} does not start and end with depot!")
+    # Verify assignment
+    assigned = set()
+    for route in route_indices:
+        assigned.update(route[1:-1])  # Exclude depot
 
-        # Track assigned nodes
-        all_assigned.update(route)
-
-    # Verify all nodes are assigned
-    missing = all_nodes - all_assigned
-    if missing:
+    if missing := (all_nodes - {0} - assigned):  # Exclude depot
         st.error(f"Nodes not assigned to any route: {missing}")
     else:
-        st.success("All nodes are assigned to routes")
-
-    # Compare with initial assignments
-    changed_assignments = []
-    for i, route in enumerate(route_indices):
-        original_nodes = set([j + 1 for j, label in enumerate(delivery_labels) if label == i])
-        final_nodes = set(n for n in route if n != 0)
-        if original_nodes != final_nodes:
-            added = final_nodes - original_nodes
-            removed = original_nodes - final_nodes
-            if added:
-                st.write(f"Route {i} added nodes: {added}")
-            if removed:
-                st.write(f"Route {i} removed nodes: {removed}")
-            changed_assignments.append(i)
-
-    if changed_assignments:
-        st.write(f"\nRoutes with changed assignments: {changed_assignments}")
-    else:
-        st.write("\nAll nodes remained in their original clusters")
+        st.success("All nodes assigned to routes")
 
     return route_indices, labels
 

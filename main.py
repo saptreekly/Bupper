@@ -39,14 +39,12 @@ def main():
     st.write("""
     ### Multi-Vehicle Routing Problem Solver with Time Windows
     This application uses:
-    1. K-means clustering for territory assignment
-    2. Adaptive Ant Colony Optimization (ACO) with:
-       - Dynamic ant count based on problem size
-       - Adaptive evaporation rate
-       - Penalty-based time window handling
-    3. 3-opt Local Search Improvement
-    4. Capacity constraints for each vehicle
-    5. Time window constraints for each location
+    1. Automatic vehicle count determination
+    2. K-means clustering for territory assignment
+    3. Adaptive Ant Colony Optimization (ACO)
+    4. 3-opt Local Search Improvement
+    5. Capacity constraints for each vehicle
+    6. Time window constraints for each location
     """)
 
     # Input parameters
@@ -56,8 +54,20 @@ def main():
     st.sidebar.subheader("Instance Size")
     n_points = st.sidebar.slider("Number of Points", 10, 300, 20,
         help="Total number of delivery points (excluding depot)")
-    n_vehicles = st.sidebar.slider("Number of Vehicles", 2, 10, 3,
-        help="Number of available vehicles (clusters)")
+
+    # Vehicle Parameters
+    st.sidebar.subheader("Vehicle Parameters")
+    vehicle_capacity = st.sidebar.slider("Vehicle Capacity", 10, 100, 50,
+        help="Maximum capacity for each vehicle")
+    vehicle_speed = st.sidebar.slider("Vehicle Speed", 0.1, 5.0, 1.0,
+        help="Travel speed (distance/time unit)")
+
+    # Optional manual override for vehicle count
+    use_auto_vehicles = st.sidebar.checkbox("Automatically determine vehicle count", value=True,
+        help="Calculate required vehicles based on demands and capacity")
+    if not use_auto_vehicles:
+        n_vehicles = st.sidebar.slider("Number of Vehicles", 2, 10, 3,
+            help="Number of available vehicles (clusters)")
 
     # Time Window Parameters
     st.sidebar.subheader("Time Window Parameters")
@@ -67,13 +77,6 @@ def main():
         help="Minimum width of time windows")
     max_window = st.sidebar.slider("Max Time Window", 20.0, 60.0, 30.0,
         help="Maximum width of time windows")
-
-    # Vehicle Parameters
-    st.sidebar.subheader("Vehicle Parameters")
-    vehicle_capacity = st.sidebar.slider("Vehicle Capacity", 10, 100, 50,
-        help="Maximum capacity for each vehicle")
-    vehicle_speed = st.sidebar.slider("Vehicle Speed", 0.1, 5.0, 1.0,
-        help="Travel speed (distance/time unit)")
 
     # Add new parameters to sidebar
     st.sidebar.subheader("Optimization Parameters")
@@ -127,14 +130,8 @@ def main():
 
     if st.button("Generate and Solve VRP"):
         try:
-            # Generate global points array at the start
+            # Generate points and time windows
             global_points = generate_random_points(n_points + 1)  # +1 for depot
-
-            st.write("\n=== Global Points Array Info ===")
-            st.write(f"Global points array shape: {global_points.shape}")
-            st.write(f"Number of points (including depot): {len(global_points)}")
-
-            # Generate time windows using global indices
             time_windows = generate_random_time_windows(
                 n_points + 1,
                 horizon=time_horizon,
@@ -142,18 +139,23 @@ def main():
                 max_window=max_window
             )
 
-            # Cluster points - keep original points array intact
+            # Initialize demands
+            demands = [1.0] * len(global_points)  # Simple demand model
+
+            # Cluster points with automatic vehicle determination
             with st.spinner("Clustering points..."):
-                route_indices, labels = cluster_points(global_points, n_vehicles)
+                route_indices, labels = cluster_points(
+                    global_points,
+                    n_clusters=None if use_auto_vehicles else n_vehicles,
+                    demands=demands,
+                    capacity=vehicle_capacity
+                )
 
             st.write("\n=== Initial Routes Debug Info ===")
             for i, route in enumerate(route_indices):
                 st.write(f"Initial route {i}: {route}")
                 if route:
                     st.write(f"Max index in route {i}: {max(route)}")
-
-            # Initialize demands for all points (simple model)
-            demands = [1.0] * len(global_points)  # Simple demand model
 
             # Initialize ACO solver with new parameters
             aco = ACO(base_evaporation=0.15,
