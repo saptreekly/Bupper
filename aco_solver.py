@@ -250,7 +250,7 @@ class ACO:
                 )
 
     def apply_alns(self,
-                  current_route: List[int],
+                  current_route: List[int], 
                   distances: np.ndarray,
                   time_windows: Dict[int, TimeWindow],
                   removal_ratio: float = 0.2,  # Maximum fraction of nodes to remove
@@ -262,9 +262,6 @@ class ACO:
         if len(current_route) <= 3:  # Route too small for ALNS
             return current_route, self.calculate_arrival_times(
                 current_route, distances, time_windows)
-
-        st.write("\n=== ALNS Analysis ===")
-        st.write(f"Initial route: {current_route}")
 
         # Calculate current costs and violations
         current_arrival_times = self.calculate_arrival_times(current_route, distances, time_windows)
@@ -288,31 +285,31 @@ class ACO:
             reverse=True
         )
 
-        if violation_nodes:
-            st.write(f"Found {len(violation_nodes)} nodes with violations:")
-            for node, violation in violation_nodes[:3]:  # Show top 3 violations
-                st.write(f"Node {node}: violation = {violation:.2f}")
-
-        # Calculate maximum nodes to remove
-        max_removals = max(1, int(len(removable) * removal_ratio))
+        # Calculate maximum nodes to remove based on route size
+        max_removals = max(1, min(3, int(len(removable) * removal_ratio)))  # Limit max removals
         removal_candidates = [
             node for node, violation in violation_nodes
             if violation >= violation_threshold
         ][:max_removals]
 
         if not removal_candidates:
-            st.write("No suitable nodes for removal")
             return current_route, current_arrival_times
 
-        st.write(f"Selected {len(removal_candidates)} nodes for removal: {removal_candidates}")
+        # Performance metrics for logging
+        metrics = {
+            'original_cost': current_cost,
+            'violations_before': len(node_violations),
+            'nodes_to_repair': len(removal_candidates)
+        }
 
         # Create partial route by removing selected nodes
         remaining_route = [n for n in current_route if n not in removal_candidates]
-
-        # Try different insertion positions
-        best_route = remaining_route
+        best_route = remaining_route.copy()
         best_cost = float('inf')
         best_arrival_times = None
+
+        # Track successful reinsertions
+        reinserted_nodes = set()
 
         # Reinsert nodes one by one
         for node in removal_candidates:
@@ -341,6 +338,7 @@ class ACO:
                     [node] + 
                     remaining_route[current_best_pos:]
                 )
+                reinserted_nodes.add(node)
 
                 # Update best solution if improved
                 if current_best_cost < best_cost:
@@ -348,15 +346,49 @@ class ACO:
                     best_cost = current_best_cost
                     best_arrival_times = current_best_times
 
-        # Compare final solution with initial
-        if best_cost < current_cost:
-            improvement = ((current_cost - best_cost) / current_cost) * 100
-            st.write(f"ALNS improved solution by {improvement:.1f}%")
-            st.write(f"New route: {best_route}")
-            return best_route, best_arrival_times
-        else:
-            st.write("ALNS did not find improvement")
-            return current_route, current_arrival_times
+        # Verify all nodes were reinserted
+        missing_nodes = set(removal_candidates) - reinserted_nodes
+        if missing_nodes:
+            # Force reinsertion of any missing nodes at best possible position
+            for node in missing_nodes:
+                min_increase = float('inf')
+                best_pos = 1  # Default to first position after depot
+
+                for pos in range(1, len(best_route)):
+                    temp_route = best_route[:pos] + [node] + best_route[pos:]
+                    temp_cost = self.calculate_total_cost(
+                        temp_route,
+                        distances,
+                        self.calculate_arrival_times(temp_route, distances, time_windows),
+                        time_windows
+                    )
+                    increase = temp_cost - best_cost
+                    if increase < min_increase:
+                        min_increase = increase
+                        best_pos = pos
+
+                # Force insert at best found position
+                best_route = best_route[:best_pos] + [node] + best_route[best_pos:]
+                best_arrival_times = self.calculate_arrival_times(best_route, distances, time_windows)
+                best_cost = self.calculate_total_cost(best_route, distances, best_arrival_times, time_windows)
+
+        # Calculate final metrics
+        final_violations = len([n for n in best_route[1:-1] 
+                              if n in time_windows and 
+                              best_arrival_times[n] > time_windows[n].latest])
+
+        metrics.update({
+            'final_cost': best_cost,
+            'violations_after': final_violations,
+            'cost_change_pct': ((best_cost - current_cost) / current_cost) * 100
+        })
+
+        # Log summary metrics only
+        if metrics['cost_change_pct'] < 0:  # Only log improvements
+            st.write(f"ALNS improved solution by {abs(metrics['cost_change_pct']):.1f}%")
+            st.write(f"Violations reduced from {metrics['violations_before']} to {metrics['violations_after']}")
+
+        return best_route, best_arrival_times
 
     def repair_time_windows(self,
                          route: List[int],
