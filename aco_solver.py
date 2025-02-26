@@ -519,6 +519,8 @@ class ACO:
         best_cost = float('inf')
         best_arrival_times = {}
         previous_best_cost = float('inf')
+        initial_best_cost = float('inf')
+        initial_violations = 0
 
         # Track node inclusion
         node_inclusion_count = {node: 0 for node in delivery_nodes}
@@ -575,6 +577,15 @@ class ACO:
                         self.log(f"Error in ant construction: {str(e)}")
                         continue
 
+            # Store first solution metrics after parallel construction
+            if iteration == 0 and all_paths:
+                initial_best_cost = min(all_costs)
+                best_arrival_times_idx = all_costs.index(initial_best_cost)
+                initial_violations = self.count_time_violations(
+                    all_arrival_times[best_arrival_times_idx], time_windows)
+                st.write(f"Initial solution - Cost: {initial_best_cost:.2f}, "
+                        f"Violations: {initial_violations}")
+
             # Update best solution
             min_cost_idx = np.argmin(all_costs)
             if all_costs[min_cost_idx] < best_cost:
@@ -618,7 +629,7 @@ class ACO:
         st.write("\n=== Node Inclusion Analysis ===")
         never_included = {node for node, count in node_inclusion_count.items() if count == 0}
         rarely_included = {node for node, count in node_inclusion_count.items() 
-                         if 0 < count < n_iterations * self.n_ants * 0.1}  # Less than 10% inclusion
+                          if 0 < count < n_iterations * self.n_ants * 0.1}  # Less than 10% inclusion
 
         if never_included:
             st.write(f"\nNodes never included in any solution: {never_included}")
