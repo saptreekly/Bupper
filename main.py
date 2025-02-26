@@ -70,6 +70,21 @@ def main():
     verbose_logging = st.sidebar.checkbox("Enable Detailed Logging", False,
         help="Show detailed optimization progress (may slow down UI)")
 
+    # Cross-Route Optimization Parameters
+    st.sidebar.subheader("Cross-Route Parameters")
+    allow_capacity_overflow = st.sidebar.slider(
+        "Capacity Overflow Allowance", 0.0, 0.3, 0.1,
+        help="Maximum allowed capacity overflow as fraction of vehicle capacity")
+    allow_time_violation = st.sidebar.checkbox(
+        "Allow Time Window Violations", True,
+        help="Allow slight violations of time windows with penalty")
+    time_violation_penalty = st.sidebar.slider(
+        "Time Violation Penalty", 1.0, 5.0, 1.5,
+        help="Penalty factor for time window violations")
+    capacity_penalty = st.sidebar.slider(
+        "Capacity Violation Penalty", 1.0, 5.0, 2.0,
+        help="Penalty factor for capacity violations")
+
 
     if st.button("Generate and Solve VRP"):
         try:
