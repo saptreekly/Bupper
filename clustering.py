@@ -12,7 +12,7 @@ def cluster_points(points: np.ndarray, n_clusters: int) -> Tuple[List[List[int]]
 
     Returns:
         route_indices: List of lists containing global node indices for each route
-        labels: Cluster assignment for each point
+        labels: Global array of labels (one per point, including depot)
     """
     # Separate depot and delivery points
     delivery_points = points[1:]  # Skip depot (index 0)
@@ -21,7 +21,7 @@ def cluster_points(points: np.ndarray, n_clusters: int) -> Tuple[List[List[int]]
     kmeans = KMeans(n_clusters=n_clusters, random_state=42)
     delivery_labels = kmeans.fit_predict(delivery_points)
 
-    # Add depot label (special value -1)
+    # Create full labels array with depot label (-1) and delivery point labels
     labels = np.concatenate([[-1], delivery_labels])
 
     # Group point indices by cluster, always including depot
@@ -33,6 +33,8 @@ def cluster_points(points: np.ndarray, n_clusters: int) -> Tuple[List[List[int]]
         cluster_mask = delivery_labels == i
         cluster_indices = np.where(cluster_mask)[0] + 1  # Convert to global indices
         route.extend(cluster_indices)
+        # End with depot
+        route.append(0)
         route_indices.append(route)
 
     return route_indices, labels
