@@ -7,6 +7,19 @@ from visualizer import plot_routes
 from clustering import cluster_points, check_capacity_constraints
 from cross_route_optimizer import optimize_cross_route
 
+def verify_and_fix_routes(routes, num_points, distances, demands, capacity, time_windows, speed):
+    # Placeholder for a more sophisticated verification function.  This example simply checks for capacity violations.
+    fixed_routes = []
+    for route in routes:
+        total_demand = sum(demands[i] for i in route)
+        if total_demand > capacity:
+            #Simple fix: remove the last node until capacity is met.  Replace with a more robust method.
+            while total_demand > capacity and len(route) > 1:
+                route.pop()
+                total_demand = sum(demands[i] for i in route)
+        fixed_routes.append(route)
+    return fixed_routes
+
 def main():
     st.title("Vehicle Routing Problem Solver")
 
@@ -113,6 +126,9 @@ def main():
                 if route:
                     st.write(f"Max index in route {i}: {max(route)}")
 
+            # Initialize demands for all points (simple model)
+            demands = [1.0] * len(global_points)  # Simple demand model
+
             # Initialize ACO solver with new parameters
             aco = ACO(base_evaporation=0.15,
                       alpha=1.5,
@@ -125,7 +141,7 @@ def main():
                       verbose=verbose_logging)  # Add verbosity control
 
             # Store demands and capacity for verification
-            aco.demands = [1.0] * len(global_points)  # Simple demand model
+            aco.demands = demands  # Store for verification
             aco.capacity = vehicle_capacity
 
             # Solve for each cluster
@@ -140,9 +156,6 @@ def main():
                         all_lengths.append(0)
                         all_arrival_times.append({})
                         continue
-
-                    # Simple demand model: each point has demand of 1
-                    demands = [1.0] * len(global_points)  # Use float for demands
 
                     # Check capacity constraint
                     if not check_capacity_constraints(route_nodes, demands, vehicle_capacity):
@@ -164,13 +177,25 @@ def main():
                     all_lengths.append(cost)
                     all_arrival_times.append(arrival_times)
 
-            st.write("\n=== Final Routes Debug Info ===")
-            for i, route in enumerate(all_routes):
-                st.write(f"Final route {i}: {route}")
-                if route:
-                    st.write(f"Max index in route {i}: {max(route)}")
-                    if max(route) >= len(global_points):
-                        st.error(f"Route {i} contains invalid index: {max(route)} >= {len(global_points)}")
+            # Verify and fix final routes
+            st.subheader("Route Verification")
+            final_routes = verify_and_fix_routes(
+                all_routes,
+                len(global_points),
+                distances=np.array([[np.sqrt(np.sum((p1 - p2) ** 2))
+                                   for p2 in global_points]
+                                   for p1 in global_points]),
+                demands=demands,
+                capacity=vehicle_capacity,
+                time_windows=time_windows,
+                speed=vehicle_speed
+            )
+
+            # Update routes and recalculate costs
+            all_routes = final_routes
+            all_lengths = [sum(np.sqrt(np.sum((global_points[r[i]] - global_points[r[i+1]]) ** 2))
+                             for i in range(len(r)-1))
+                         for r in all_routes]
 
             # Display results
             st.subheader("Results")

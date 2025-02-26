@@ -17,87 +17,155 @@ def verify_and_fix_routes(routes: List[List[int]],
     """
     Verify all nodes are included in routes and fix any missing nodes.
     """
-    # Collect all assigned nodes (excluding depot)
-    assigned = set()
+    import streamlit as st
+    st.write("\n=== Route Verification Process ===")
+
+    # Remove duplicate depot entries (keep only start/end)
+    for i, route in enumerate(routes):
+        if not route:
+            continue
+        # Keep only first and last depot
+        cleaned_route = [node for j, node in enumerate(route) 
+                        if node != 0 or j == 0 or j == len(route)-1]
+        if cleaned_route[0] != 0:
+            cleaned_route.insert(0, 0)
+        if cleaned_route[-1] != 0:
+            cleaned_route.append(0)
+        routes[i] = cleaned_route
+
+    # Count node occurrences
+    node_counts = {i: 0 for i in range(1, n_points)}  # Exclude depot
     for route in routes:
-        assigned.update(set(route[1:-1]))  # Exclude depot (0) at start and end
+        for node in route[1:-1]:  # Skip depot at start/end
+            node_counts[node] = node_counts.get(node, 0) + 1
 
-    # Find missing nodes
-    all_nodes = set(range(1, n_points))  # All nodes except depot
-    missing = all_nodes - assigned
+    # Find missing and duplicate nodes
+    missing_nodes = [node for node, count in node_counts.items() if count == 0]
+    duplicate_nodes = [node for node, count in node_counts.items() if count > 1]
 
-    if missing:
-        import streamlit as st
-        st.write(f"\n=== Missing Nodes Detected ===")
-        st.write(f"Found {len(missing)} unassigned nodes: {missing}")
+    if missing_nodes:
+        st.write(f"\nFound {len(missing_nodes)} missing nodes: {missing_nodes}")
+    if duplicate_nodes:
+        st.write(f"\nFound {len(duplicate_nodes)} duplicate nodes: {duplicate_nodes}")
 
-        # Try to insert each missing node
-        for node in missing:
-            best_route_idx = -1
-            best_position = -1
-            min_cost_increase = float('inf')
+    # Remove duplicate nodes (keep first occurrence)
+    if duplicate_nodes:
+        for node in duplicate_nodes:
+            found_first = False
+            for route in routes:
+                if node in route:
+                    if found_first:
+                        # Remove additional occurrences
+                        route.remove(node)
+                    else:
+                        found_first = True
 
-            # Try inserting into each route
-            for route_idx, route in enumerate(routes):
-                if len(route) <= 2:  # Skip empty routes (depot-depot)
-                    continue
+    # Try to insert missing nodes
+    for node in missing_nodes:
+        best_route_idx = -1
+        best_position = -1
+        min_cost_increase = float('inf')
+        best_arrival_times = None
 
-                # Check capacity constraint first
-                route_demand = sum(demands[i] for i in route[1:-1])
-                if route_demand + demands[node] > capacity:
-                    continue
+        st.write(f"\nTrying to insert node {node}...")
 
-                # Try each insertion position (excluding start/end depot positions)
-                for pos in range(1, len(route)):
-                    # Create candidate route
-                    new_route = route[:pos] + [node] + route[pos:]
+        # Try inserting into each route
+        for route_idx, route in enumerate(routes):
+            if len(route) <= 2:  # Skip empty routes (depot-depot)
+                continue
 
-                    # Calculate cost increase
-                    old_cost = sum(distances[route[i]][route[i+1]] 
-                                 for i in range(len(route)-1))
-                    new_cost = sum(distances[new_route[i]][new_route[i+1]] 
-                                 for i in range(len(new_route)-1))
-                    cost_increase = new_cost - old_cost
+            # Check capacity constraint
+            route_demand = sum(demands[i] for i in route[1:-1])
+            if route_demand + demands[node] > capacity * 1.1:  # Allow 10% overflow
+                st.write(f"Route {route_idx} exceeds capacity - skipping")
+                continue
 
-                    # Check time window feasibility
-                    feasible = True
-                    if time_windows:
-                        arrival_times = {}
-                        current_time = 0.0
+            # Try each insertion position
+            for pos in range(1, len(route)):
+                # Calculate cost increase
+                old_cost = sum(distances[route[i]][route[i+1]] 
+                             for i in range(len(route)-1))
 
-                        for i in range(len(new_route) - 1):
-                            current = new_route[i]
-                            next_node = new_route[i + 1]
-                            travel_time = distances[current][next_node] / speed
+                new_route = route[:pos] + [node] + route[pos:]
+                new_cost = sum(distances[new_route[i]][new_route[i+1]] 
+                             for i in range(len(new_route)-1))
 
-                            if current in time_windows:
-                                tw = time_windows[current]
-                                if current_time < tw.earliest:
-                                    current_time = tw.earliest
-                                elif current_time > tw.latest:
-                                    feasible = False
-                                    break
-                                current_time += tw.service_time
+                cost_increase = new_cost - old_cost
 
-                            current_time += travel_time
-                            arrival_times[next_node] = current_time
+                # Check time windows with relaxation
+                feasible = True
+                arrival_times = {}
+                current_time = 0.0
+                total_delay = 0.0
 
-                    if feasible and cost_increase < min_cost_increase:
-                        min_cost_increase = cost_increase
-                        best_route_idx = route_idx
-                        best_position = pos
+                for i in range(len(new_route) - 1):
+                    current = new_route[i]
+                    next_node = new_route[i + 1]
+                    travel_time = distances[current][next_node] / speed
 
-            if best_route_idx >= 0:
-                # Insert node at best position
-                route = routes[best_route_idx]
-                routes[best_route_idx] = (
-                    route[:best_position] + [node] + route[best_position:]
-                )
-                st.write(f"Inserted node {node} into route {best_route_idx} "
-                        f"at position {best_position}")
-                st.write(f"Cost increase: {min_cost_increase:.2f}")
+                    if current in time_windows:
+                        tw = time_windows[current]
+                        if current_time < tw.earliest:
+                            current_time = tw.earliest
+                        elif current_time > tw.latest:
+                            delay = current_time - tw.latest
+                            total_delay += delay
+                        current_time += tw.service_time
+
+                    current_time += travel_time
+                    arrival_times[next_node] = current_time
+
+                # Add time window violation penalty
+                if total_delay > 0:
+                    cost_increase += total_delay * 1.5  # Penalty factor
+
+                if cost_increase < min_cost_increase:
+                    min_cost_increase = cost_increase
+                    best_route_idx = route_idx
+                    best_position = pos
+                    best_arrival_times = arrival_times
+
+        if best_route_idx >= 0:
+            # Insert node at best position
+            route = routes[best_route_idx]
+            routes[best_route_idx] = (
+                route[:best_position] + [node] + route[best_position:]
+            )
+            st.write(f"Inserted node {node} into route {best_route_idx} "
+                    f"at position {best_position}")
+            st.write(f"Cost increase: {min_cost_increase:.2f}")
+
+            if best_arrival_times:
+                tw = time_windows.get(node)
+                if tw:
+                    arrival = best_arrival_times[node]
+                    if arrival > tw.latest:
+                        st.write(f"Note: Arrival time {arrival:.1f} exceeds "
+                               f"time window [{tw.earliest:.1f}, {tw.latest:.1f}]")
+        else:
+            # Create new route if necessary
+            if demands[node] <= capacity:
+                new_route = [0, node, 0]  # depot -> node -> depot
+                routes.append(new_route)
+                st.write(f"Created new route for node {node}")
             else:
-                st.error(f"Could not find feasible insertion for node {node}!")
+                st.error(f"Could not feasibly insert node {node}!")
+
+    # Verify final routes
+    st.write("\n=== Final Route Verification ===")
+    final_counts = {i: 0 for i in range(1, n_points)}
+    for i, route in enumerate(routes):
+        st.write(f"Route {i}: {route}")
+        for node in route[1:-1]:
+            final_counts[node] = final_counts.get(node, 0) + 1
+
+    remaining_issues = [node for node, count in final_counts.items() 
+                       if count != 1]
+    if remaining_issues:
+        st.error(f"Warning: {len(remaining_issues)} nodes still have issues: "
+                f"{remaining_issues}")
+    else:
+        st.success("All nodes verified - each appears exactly once")
 
     return routes
 
@@ -447,6 +515,8 @@ class ACO:
         n_points = len(points)
         self.n_ants = int(math.log2(n_points) * self.base_ants)
         pheromone = self.initialize_pheromone(n_points)
+        self.demands = demands
+        self.capacity = capacity
 
         best_path = None
         best_cost = float('inf')
@@ -538,7 +608,7 @@ class ACO:
             ))
 
         # Verify all nodes are included
-        if hasattr(self, 'demands') and hasattr(self, 'capacity'):
+        if best_path:
             best_path = verify_and_fix_routes(
                 [best_path], len(points), distances, 
                 self.demands, self.capacity, time_windows, self.speed)[0]
