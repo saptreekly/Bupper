@@ -45,17 +45,23 @@ class ACO:
     def calculate_time_window_penalty(self,
                                    arrival_time: float,
                                    time_window: TimeWindow) -> float:
-        """Calculate aggressive penalty for time window violation."""
+        """Calculate clamped penalty for time window violation."""
         if arrival_time < time_window.earliest:
             # No penalty for early arrival (will wait)
             return 0
         elif arrival_time > time_window.latest:
-            # Exponentially increasing penalty based on lateness
+            # Calculate lateness
             lateness = arrival_time - time_window.latest
-            # More aggressive penalty calculation
-            penalty = (lateness * self.time_penalty_factor * 
-                      (1.0 + math.log2(1 + lateness)))
-            return penalty
+
+            # Clamp lateness to avoid overflow
+            MAX_LATENESS = 1000.0
+            lateness = min(lateness, MAX_LATENESS)
+
+            # Calculate penalty with clamped exponential factor
+            base_penalty = lateness * self.time_penalty_factor
+            exp_factor = min(1.0 + math.log2(1 + lateness), 10.0)  # Clamp maximum exponential factor
+
+            return base_penalty * exp_factor
         return 0
 
     def repair_time_windows(self,
@@ -172,42 +178,77 @@ class ACO:
 
 
     def construct_solution(self, 
-                         route_nodes: List[int],
-                         distances: np.ndarray,
-                         pheromone: np.ndarray) -> List[int]:
+                     route_nodes: List[int],
+                     distances: np.ndarray,
+                     pheromone: np.ndarray) -> List[int]:
         """
-        Construct a single ant's solution.
+        Construct a single ant's solution with detailed move logging
         """
         unvisited = set(route_nodes[1:])  # Skip depot
         current = 0  # Start at depot
         path = [current]
 
+        import streamlit as st
+
         while unvisited:
             moves = []
             probs = []
 
+            st.write(f"\n=== Evaluating moves from node {current} ===")
+
             for j in unvisited:
-                pheromone_factor = pheromone[current][j] ** self.alpha
-                distance_factor = (1.0 / distances[current][j]) ** self.beta
-                prob = pheromone_factor * distance_factor
+                # Calculate components
+                pheromone_value = pheromone[current][j] ** self.alpha
+                distance_value = distances[current][j]
+
+                # Avoid division by zero in distance calculation
+                if distance_value == 0:
+                    distance_factor = 1e6  # Large but finite value
+                else:
+                    distance_factor = (1.0 / distance_value) ** self.beta
+
+                # Calculate probability
+                prob = pheromone_value * distance_factor
+
+                # Clamp any non-finite values
+                if not np.isfinite(prob) or np.isnan(prob):
+                    st.write(f"Warning: Non-finite probability detected for move to node {j}")
+                    st.write(f"- Pheromone: {pheromone_value:.2e}")
+                    st.write(f"- Distance: {distance_value:.2e}")
+                    st.write(f"- Raw probability: {prob}")
+                    prob = 1e-6  # Clamp to small finite value
+
                 moves.append(j)
                 probs.append(prob)
 
-            # Select next city
-            if not probs:  # No moves available
-                break
+                # Log move details
+                st.write(f"\nCandidate move to node {j}:")
+                st.write(f"- Pheromone value: {pheromone_value:.2e}")
+                st.write(f"- Distance: {distance_value:.2f}")
+                st.write(f"- Distance factor: {distance_factor:.2e}")
+                st.write(f"- Final probability: {prob:.2e}")
 
+            # Handle total probability calculation
             total = sum(probs)
-
-            # Handle zero or non-finite probability sum
-            if total == 0 or not np.isfinite(total):
-                # Use uniform distribution as fallback
+            if total == 0:
+                st.write("\nWarning: Zero total probability detected")
+                st.write("Using uniform distribution as fallback")
                 normalized_probs = [1.0 / len(probs)] * len(probs)
-                import streamlit as st
-                st.write(f"Warning: Using uniform distribution due to {'zero' if total == 0 else 'non-finite'} probability sum")
             else:
-                normalized_probs = [p/total for p in probs]
+                # Normalize probabilities, clamping any extreme values
+                normalized_probs = []
+                for p in probs:
+                    norm_p = p / total
+                    if not np.isfinite(norm_p) or np.isnan(norm_p):
+                        norm_p = 1e-6
+                    normalized_probs.append(norm_p)
 
+                # Renormalize if needed
+                norm_total = sum(normalized_probs)
+                if norm_total != 1.0:
+                    normalized_probs = [p / norm_total for p in normalized_probs]
+
+            # Select next city
             selected_idx = random.choices(
                 population=range(len(moves)),
                 weights=normalized_probs
