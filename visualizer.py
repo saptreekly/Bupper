@@ -7,7 +7,8 @@ import streamlit as st
 def plot_routes(points: np.ndarray, 
                routes: List[List[int]],
                labels: List[int],
-               title: str = "VRP Routes") -> None:
+               title: str = "VRP Routes",
+               show_labels: bool = False) -> None:
     """
     Plot multiple vehicle routes using global indices
 
@@ -16,6 +17,7 @@ def plot_routes(points: np.ndarray,
         routes: List of routes with global node indices
         labels: Cluster assignment for each point (depot has label -1)
         title: Plot title
+        show_labels: Whether to show node ID labels (default: False)
     """
     # Enhanced debug logging
     st.write("\n=== Route Visualization Debug Info ===")
@@ -61,12 +63,13 @@ def plot_routes(points: np.ndarray,
             ax.plot([start[0], end[0]], [start[1], end[1]],
                    c=colors[i], linestyle='-', alpha=0.6)
 
-    # Add labels
-    for i, point in enumerate(points):
-        label_color = 'black' if i == 0 else 'dimgrey'
-        ax.annotate(f'Node {i}', (point[0], point[1]),
-                   xytext=(5, 5), textcoords='offset points',
-                   color=label_color)
+    # Add labels only if show_labels is True
+    if show_labels:
+        for i, point in enumerate(points):
+            label_color = 'black' if i == 0 else 'dimgrey'
+            ax.annotate(f'Node {i}', (point[0], point[1]),
+                       xytext=(5, 5), textcoords='offset points',
+                       color=label_color)
 
     ax.set_title(title)
     ax.set_xlabel('X Coordinate')
