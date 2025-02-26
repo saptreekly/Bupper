@@ -67,7 +67,7 @@ def main():
 
             # Cluster points
             with st.spinner("Clustering points..."):
-                clustered_points, labels, local2global = cluster_points(points, n_vehicles)
+                route_indices, labels = cluster_points(points, n_vehicles)
 
             # Initialize ACO solver
             aco = ACO(base_evaporation=0.15,  # Increased from 0.1
@@ -84,36 +84,30 @@ def main():
             all_arrival_times = []
 
             with st.spinner("Solving routes for each vehicle..."):
-                for i, cluster_points_array in enumerate(clustered_points):
-                    if len(cluster_points_array) < 2:
+                for route_nodes in route_indices:
+                    if len(route_nodes) < 2:  # Skip empty routes
                         all_routes.append([])
                         all_lengths.append(0)
                         all_arrival_times.append({})
                         continue
 
-                    # Get indices of points in this cluster
-                    cluster_l2g = local2global[i]  # Local to global mapping for this cluster
-
                     # Simple demand model: each point has demand of 1
-                    demands = [1] * len(cluster_l2g)
+                    demands = [1] * len(points)  # Global demands array
 
                     # Check capacity constraint
-                    if not check_capacity_constraints(cluster_points_array, demands, vehicle_capacity):
-                        st.warning(f"Cluster {i} exceeds vehicle capacity!")
+                    if not check_capacity_constraints(route_nodes, demands, vehicle_capacity):
+                        st.warning(f"Route exceeds vehicle capacity!")
                         continue
 
-                    # Solve TSP for this cluster
+                    # Solve TSP for this cluster using global indices
                     route, cost, arrival_times = aco.solve(
-                        cluster_points_array, 
+                        points, 
+                        route_nodes,
                         n_iterations=100,
-                        time_windows=time_windows,
-                        local2global=cluster_l2g
+                        time_windows=time_windows
                     )
 
-                    # Convert route indices to global indices
-                    global_route = [cluster_l2g[idx] for idx in route]
-
-                    all_routes.append(global_route)
+                    all_routes.append(route)
                     all_lengths.append(cost)
                     all_arrival_times.append(arrival_times)
 
