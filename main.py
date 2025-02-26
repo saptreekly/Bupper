@@ -7,17 +7,30 @@ from visualizer import plot_routes
 from clustering import cluster_points, check_capacity_constraints
 from cross_route_optimizer import optimize_cross_route
 
-def verify_and_fix_routes(routes, num_points, distances, demands, capacity, time_windows, speed):
-    # Placeholder for a more sophisticated verification function.  This example simply checks for capacity violations.
+def verify_and_fix_routes(routes, num_points, distances, demands, capacity, time_windows, speed, max_repair_iterations=50, cost_increase_threshold=0.2, time_penalty_multiplier=3.0):
     fixed_routes = []
     for route in routes:
         total_demand = sum(demands[i] for i in route)
         if total_demand > capacity:
-            #Simple fix: remove the last node until capacity is met.  Replace with a more robust method.
-            while total_demand > capacity and len(route) > 1:
-                route.pop()
+            original_cost = sum(distances[route[i]][route[i+1]] for i in range(len(route)-1))
+            best_route = route[:]
+            best_cost = original_cost
+            for _ in range(max_repair_iterations):
+                removed_node = route.pop()
+                new_cost = sum(distances[route[i]][route[i+1]] for i in range(len(route)-1))
+                if new_cost <= best_cost * (1 + cost_increase_threshold):
+                    best_route = route[:]
+                    best_cost = new_cost
+                else:
+                    route.append(removed_node)
                 total_demand = sum(demands[i] for i in route)
-        fixed_routes.append(route)
+                if total_demand <= capacity:
+                    break
+
+            fixed_routes.append(best_route)
+
+        else:
+            fixed_routes.append(route)
     return fixed_routes
 
 def main():
@@ -70,6 +83,19 @@ def main():
         help="Penalty multiplier for time window violations")
     repair_threshold = st.sidebar.slider("Repair Cost Threshold", 0.1, 2.0, 0.5,
         help="Maximum allowed cost increase during repair (multiplier)")
+
+    # Add new repair parameters to sidebar
+    st.sidebar.subheader("Route Repair Parameters")
+    max_repair_iterations = st.sidebar.slider(
+        "Max Repair Iterations", 2, 10, 5,
+        help="Maximum attempts to improve each repair step")
+    cost_increase_threshold = st.sidebar.slider(
+        "Max Cost Increase", 0.1, 0.5, 0.2,
+        help="Maximum allowed proportional cost increase during repair")
+    time_penalty_multiplier = st.sidebar.slider(
+        "Time Penalty Factor", 1.0, 5.0, 3.0,
+        help="Penalty multiplier for time window violations during repair")
+
 
     # Advanced ACO Parameters
     st.sidebar.subheader("Advanced ACO Parameters")
@@ -188,7 +214,10 @@ def main():
                 demands=demands,
                 capacity=vehicle_capacity,
                 time_windows=time_windows,
-                speed=vehicle_speed
+                speed=vehicle_speed,
+                max_repair_iterations=max_repair_iterations,
+                cost_increase_threshold=cost_increase_threshold,
+                time_penalty_multiplier=time_penalty_multiplier
             )
 
             # Update routes and recalculate costs
