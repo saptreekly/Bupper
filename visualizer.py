@@ -12,8 +12,8 @@ def plot_routes(points: np.ndarray,
     Plot multiple vehicle routes
 
     Args:
-        points: Array of (x, y) coordinates
-        routes: List of routes (one per vehicle)
+        points: Array of (x, y) coordinates, must match global indices
+        routes: List of routes with global indices
         labels: Cluster assignment for each point
         title: Plot title
     """
