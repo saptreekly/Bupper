@@ -243,20 +243,26 @@ class ACO:
         else:
             stagnation_time = iteration - self.last_improvement_iteration
             if stagnation_time >= self.stagnation_limit:
+                # Increase exploration when stagnating
                 self.n_ants = min(self.n_ants * 2, 200)  # Cap maximum ants
                 current_evaporation = min(
                     self.base_evaporation + (stagnation_time / 10) * self.evap_increase,
                     0.9
                 )
 
+                # Adjust other parameters dynamically
+                self.q0 = max(0.01, self.q0 * 0.95)  # Reduce exploitation
+                self.alpha = max(0.5, self.alpha * 0.98)  # Reduce pheromone influence
+                self.beta = min(5.0, self.beta * 1.02)  # Increase heuristic influence
+
     def apply_alns(self,
-                  current_route: List[int], 
-                  distances: np.ndarray,
-                  time_windows: Dict[int, TimeWindow],
-                  removal_ratio: float = 0.2,  # Maximum fraction of nodes to remove
-                  violation_threshold: float = 1.0  # Minimum violation cost to consider removal
-                  ) -> Tuple[List[int], Dict[int, float]]:
-        """Apply Adaptive Large Neighborhood Search to improve solution."""
+                   current_route: List[int], 
+                   distances: np.ndarray,
+                   time_windows: Dict[int, TimeWindow],
+                   removal_ratio: float = 0.2,  # Maximum fraction of nodes to remove
+                   violation_threshold: float = 1.0,  # Minimum violation cost to consider removal
+                   adaptive_threshold: bool = True) -> Tuple[List[int], Dict[int, float]]:
+        """Apply Adaptive Large Neighborhood Search with dynamic parameters."""
         import streamlit as st
 
         if len(current_route) <= 3:  # Route too small for ALNS
@@ -267,16 +273,34 @@ class ACO:
         current_arrival_times = self.calculate_arrival_times(current_route, distances, time_windows)
         current_cost = self.calculate_total_cost(current_route, distances, current_arrival_times, time_windows)
 
-        # Identify problematic nodes (excluding depot)
+        # Track metrics
+        metrics = {
+            'original_cost': current_cost,
+            'violations_before': 0,
+            'processed_nodes': 0,
+            'successful_moves': 0
+        }
+
+        # Identify problematic nodes with adaptive thresholds
         node_violations = {}
-        removable = current_route[1:-1]  # Exclude depot at start/end
-        for node in removable:
+        total_violation = 0
+        for node in current_route[1:-1]:  # Exclude depot
             if node in time_windows:
                 arrival = current_arrival_times.get(node, 0)
                 tw = time_windows[node]
                 if arrival > tw.latest:
                     violation = arrival - tw.latest
                     node_violations[node] = violation
+                    total_violation += violation
+                    metrics['violations_before'] += 1
+
+        if not node_violations:
+            return current_route, current_arrival_times
+
+        # Adapt threshold based on average violation
+        if adaptive_threshold and node_violations:
+            avg_violation = total_violation / len(node_violations)
+            violation_threshold = max(violation_threshold, avg_violation * 0.5)
 
         # Sort nodes by violation severity
         violation_nodes = sorted(
@@ -285,42 +309,40 @@ class ACO:
             reverse=True
         )
 
-        # Performance metrics
-        metrics = {
-            'original_cost': current_cost,
-            'violations_before': len(node_violations),
-            'processed_nodes': 0,
-            'successful_moves': 0
-        }
-
         improved_route = current_route[:]
         improved_cost = current_cost
         improved_times = current_arrival_times
 
-        # Process one node at a time with immediate reinsertion
+        # Process nodes one at a time with immediate reinsertion check
         for node, violation in violation_nodes:
             if violation < violation_threshold:
-                break
+                continue
 
             metrics['processed_nodes'] += 1
+
+            # Only attempt removal if we can predict improvement
+            estimated_benefit = violation / current_cost
+            if estimated_benefit < 0.01:  # Skip if potential improvement is minimal
+                continue
 
             # Try removal and immediate reinsertion
             temp_route = [n for n in improved_route if n != node]
             best_insertion = None
             min_cost_increase = float('inf')
 
-            # Try each insertion position
+            # Try each insertion position with look-ahead
             for pos in range(1, len(temp_route)):
                 candidate_route = temp_route[:pos] + [node] + temp_route[pos:]
                 arrival_times = self.calculate_arrival_times(candidate_route, distances, time_windows)
                 new_cost = self.calculate_total_cost(candidate_route, distances, arrival_times, time_windows)
 
+                # Calculate the actual improvement
                 cost_change = new_cost - improved_cost
                 if cost_change < min_cost_increase:
                     min_cost_increase = cost_change
                     best_insertion = (pos, candidate_route, arrival_times, new_cost)
 
-            # Only accept move if it improves the solution
+            # Only accept move if it strictly improves the solution
             if best_insertion and best_insertion[3] < improved_cost:
                 pos, new_route, new_times, new_cost = best_insertion
                 improved_route = new_route
@@ -328,26 +350,19 @@ class ACO:
                 improved_times = new_times
                 metrics['successful_moves'] += 1
 
-        # Calculate final metrics
-        metrics.update({
-            'final_cost': improved_cost,
-            'cost_reduction': ((current_cost - improved_cost) / current_cost) * 100 if improved_cost < current_cost else 0,
-            'final_violations': len([n for n in improved_route[1:-1] 
-                                   if n in time_windows and 
-                                   improved_times[n] > time_windows[n].latest])
-        })
-
-        # Log only if improvement found
-        if metrics['cost_reduction'] > 0:
-            st.write(f"ALNS Summary:")
-            st.write(f"- Cost reduction: {metrics['cost_reduction']:.1f}%")
-            st.write(f"- Violations: {metrics['violations_before']} → {metrics['final_violations']}")
-            st.write(f"- Successful moves: {metrics['successful_moves']}/{metrics['processed_nodes']}")
-
         # Verify node preservation
         if len(set(improved_route[1:-1])) != len(set(current_route[1:-1])):
-            st.error("Node preservation violation detected!")
             return current_route, current_arrival_times
+
+        # Calculate improvement metrics
+        cost_reduction = ((current_cost - improved_cost) / current_cost) * 100
+        final_violations = len([n for n in improved_route[1:-1] 
+                              if n in time_windows and 
+                              improved_times[n] > time_windows[n].latest])
+
+        # Log only significant improvements
+        if cost_reduction > 1.0 or final_violations < metrics['violations_before']:
+            st.write(f"ALNS: Cost reduction {cost_reduction:.1f}%, Violations: {metrics['violations_before']} → {final_violations}")
 
         return improved_route, improved_times
 
