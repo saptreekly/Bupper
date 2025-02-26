@@ -183,7 +183,7 @@ class ACO:
                  time_penalty_factor: float = 2.0,  # Penalty multiplier for time window violations
                  base_time_penalty: float = 2.0,    # Base penalty for time window violations
                  lateness_multiplier: float = 1.5,  # Multiplier for increasing penalties
-                 max_parallel_ants: int = 4,        # Maximum number of parallel ant constructions
+                 max_parallel_ants: int = 8,        # Increased from 4
                  verbose: bool = False):            # Control logging verbosity
         self.base_ants = base_ants
         self.base_evaporation = base_evaporation
@@ -211,8 +211,10 @@ class ACO:
             st.write(message)
 
     def calculate_distances(self, points: np.ndarray) -> np.ndarray:
-        """Calculate distance matrix between all points using vectorized operations."""
-        return np.sqrt(np.sum((points[:, np.newaxis] - points) ** 2, axis=2))
+        """Calculate distance matrix using vectorized operations."""
+        # Vectorized Euclidean distance calculation
+        diff = points[:, np.newaxis, :] - points[np.newaxis, :, :]
+        return np.sqrt(np.sum(diff * diff, axis=-1))
 
     def initialize_pheromone(self, n_points: int) -> np.ndarray:
         """Initialize pheromone matrix."""
@@ -234,11 +236,16 @@ class ACO:
     def adapt_parameters(self, 
                         iteration: int,
                         current_cost: float,
-                        previous_best: float) -> None:
-        """Adapt ACO parameters based on solution improvement."""
+                        previous_best: float,
+                        problem_size: int) -> None:
+        """Adapt ACO parameters based on solution improvement and problem size."""
         if current_cost < previous_best:
             self.last_improvement_iteration = iteration
-            self.n_ants = self.base_ants
+            # Scale ant count with problem size
+            self.n_ants = min(
+                self.base_ants * int(math.log2(problem_size / 100 + 1)),
+                200  # Maximum ants cap
+            )
             current_evaporation = self.base_evaporation
         else:
             stagnation_time = iteration - self.last_improvement_iteration
@@ -524,16 +531,20 @@ class ACO:
                         all_paths: List[List[int]],
                         all_costs: List[float],
                         current_evaporation: float) -> np.ndarray:
-        """Update pheromone levels based on solution quality."""
+        """Update pheromone levels using vectorized operations."""
+        # Global evaporation
         pheromone *= (1.0 - current_evaporation)
 
-        for path, cost in zip(all_paths, all_costs):
-            deposit = 1.0 / (cost + 1e-10)  # Avoid division by zero
-            for i in range(len(path) - 1):
-                current = path[i]
-                next_city = path[i + 1]
-                pheromone[current][next_city] += deposit
-                pheromone[next_city][current] += deposit
+        # Vectorized deposit calculation
+        deposits = 1.0 / (np.array(all_costs) + 1e-10)
+
+        # Update pheromone matrix efficiently
+        for path, deposit in zip(all_paths, deposits):
+            path_array = np.array(path)
+            start_nodes = path_array[:-1]
+            end_nodes = path_array[1:]
+            pheromone[start_nodes, end_nodes] += deposit
+            pheromone[end_nodes, start_nodes] += deposit  # Symmetric update
 
         return pheromone
 
@@ -648,7 +659,7 @@ class ACO:
                     self.log(f"Cost improved by {improvement*100:.1f}%", force=True)
 
             # Adapt parameters and apply ALNS
-            self.adapt_parameters(iteration, best_cost, previous_best_cost)
+            self.adapt_parameters(iteration, best_cost, previous_best_cost, len(points))
             if iteration % alns_frequency == 0 and best_path is not None:
                 improved_path, improved_times = self.apply_alns(best_path, distances, time_windows)
                 improved_cost = self.calculate_total_cost(improved_path, distances, improved_times, time_windows)

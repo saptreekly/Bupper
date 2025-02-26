@@ -1,53 +1,73 @@
 import numpy as np
 from typing import List, Tuple, Dict, Optional
-from sklearn.cluster import KMeans
+from sklearn.cluster import KMeans, MiniBatchKMeans
 import streamlit as st
 import math
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 def calculate_min_vehicles(n_points: int,
                          demands: List[float],
                          capacity: float,
-                         min_vehicles: int = 2,
-                         max_vehicles: int = 10) -> int:
+                         min_vehicles: int = 5,
+                         max_vehicles: int = 50,  # Increased from 10
+                         max_points_per_vehicle: int = 25) -> int:
     """Calculate minimum number of vehicles needed based on demands and capacity."""
     # Sum all demands (excluding depot at index 0)
     total_demand = sum(demands[1:])
 
-    # Calculate theoretical minimum vehicles needed
-    min_vehicles_demand = math.ceil(total_demand / capacity)
+    # Calculate minimum vehicles needed based on different constraints
+    vehicles_by_demand = math.ceil(total_demand / capacity)
+    vehicles_by_size = math.ceil((n_points - 1) / max_points_per_vehicle)
 
-    # Consider number of points (aim for reasonable route sizes)
-    points_per_vehicle = 30  # Target max points per vehicle
-    min_vehicles_size = math.ceil((n_points - 1) / points_per_vehicle)
+    # Add scaling factor for larger problems
+    scaling_factor = math.log2(n_points / 100) if n_points > 100 else 1
+    adjusted_min = math.ceil(max(vehicles_by_demand, vehicles_by_size) * scaling_factor)
 
-    # Take maximum of both constraints
-    required_vehicles = max(min_vehicles_demand, min_vehicles_size)
+    # Clamp to acceptable range with higher limits
+    return max(min_vehicles, min(adjusted_min, max_vehicles))
 
-    # Clamp to acceptable range
-    return max(min_vehicles, min(required_vehicles, max_vehicles))
+def parallel_distance_calculation(node_point: np.ndarray,
+                                route_points: np.ndarray) -> float:
+    """Calculate minimum distance from a point to route points using vectorization."""
+    distances = np.sqrt(np.sum((route_points - node_point) ** 2, axis=1))
+    return np.min(distances) if len(distances) > 0 else float('inf')
 
 def cluster_points(points: np.ndarray, 
                   n_clusters: Optional[int] = None,
                   demands: Optional[List[float]] = None,
                   capacity: Optional[float] = None) -> Tuple[List[List[int]], List[int]]:
     """
-    Cluster points using K-means with automatic vehicle count determination
+    Cluster points using efficient K-means with parallel processing for large datasets
     """
-    # Calculate minimum required vehicles if not specified
+    # Calculate required vehicles
     if n_clusters is None and demands is not None and capacity is not None:
         n_clusters = calculate_min_vehicles(
             len(points), demands, capacity
         )
         st.write(f"\nAutomatically determined {n_clusters} vehicles needed")
     elif n_clusters is None:
-        n_clusters = max(2, min(10, (len(points) - 1) // 30))
+        points_per_vehicle = 25
+        n_clusters = max(5, min(50, (len(points) - 1) // points_per_vehicle))
         st.write(f"\nUsing default of {n_clusters} vehicles based on problem size")
 
     # Separate depot and delivery points
-    delivery_points = points[1:]  # Skip depot (index 0)
+    delivery_points = points[1:]  # Skip depot
 
-    # Fit K-means on delivery points only
-    kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+    # Use MiniBatchKMeans for large datasets
+    if len(delivery_points) > 500:
+        kmeans = MiniBatchKMeans(
+            n_clusters=n_clusters,
+            batch_size=100,
+            random_state=42
+        )
+    else:
+        kmeans = KMeans(
+            n_clusters=n_clusters,
+            random_state=42
+        )
+
+    # Fit clustering model
     delivery_labels = kmeans.fit_predict(delivery_points)
 
     # Initialize route construction
@@ -55,63 +75,48 @@ def cluster_points(points: np.ndarray,
     assigned_nodes = set([0])  # Depot is always assigned
 
     # First pass: Assign nodes to their clusters
-    st.write("\n=== Initial Cluster Assignments ===")
     for i in range(n_clusters):
         cluster_nodes = [j + 1 for j, label in enumerate(delivery_labels) if label == i]
         route_indices[i].extend(cluster_nodes)
         assigned_nodes.update(cluster_nodes)
 
-    # Check for unassigned nodes
+    # Handle unassigned nodes with parallel processing
     all_nodes = set(range(len(points)))
     unassigned = all_nodes - assigned_nodes
 
     if unassigned:
-        st.write(f"\nFound {len(unassigned)} unassigned nodes")
-        # Try to assign nodes to nearest feasible route
-        for node in unassigned:
-            best_route = -1
-            min_distance = float('inf')
-            node_point = points[node]
+        st.write(f"\nAssigning {len(unassigned)} nodes to routes...")
 
-            for i, route in enumerate(route_indices):
-                # Skip empty routes
-                if not route:
-                    continue
+        # Process unassigned nodes in parallel
+        with ThreadPoolExecutor() as executor:
+            for node in unassigned:
+                node_point = points[node]
+                best_route = -1
+                min_distance = float('inf')
 
-                # Check capacity if available
-                if demands and capacity:
-                    route_demand = sum(demands[n] for n in route)
-                    if route_demand + demands[node] > capacity * 1.1:  # Allow 10% overflow
-                        continue
+                # Calculate distances to all routes in parallel
+                distance_calc = partial(parallel_distance_calculation, node_point)
+                route_points = [points[route] for route in route_indices if route]
+                distances = list(executor.map(distance_calc, route_points))
 
-                # Calculate distance to route centroid
-                route_points = points[route]
-                centroid = np.mean(route_points, axis=0)
-                dist = np.sqrt(np.sum((node_point - centroid) ** 2))
+                # Find best route considering capacity
+                for i, dist in enumerate(distances):
+                    if dist < min_distance:
+                        if not demands or not capacity or \
+                           sum(demands[n] for n in route_indices[i]) + demands[node] <= capacity * 1.1:
+                            min_distance = dist
+                            best_route = i
 
-                if dist < min_distance:
-                    min_distance = dist
-                    best_route = i
-
-            if best_route >= 0:
-                # Insert node before final depot if present
-                if route_indices[best_route] and route_indices[best_route][-1] == 0:
+                if best_route >= 0:
                     route_indices[best_route].insert(-1, node)
                 else:
-                    route_indices[best_route].append(node)
-                st.write(f"Assigned node {node} to route {best_route}")
-            else:
-                # Create new route if necessary and possible
-                if len(route_indices) < max_vehicles:
-                    new_route = [0, node, 0]  # depot -> node -> depot
+                    # Create new route if necessary
+                    new_route = [0, node, 0]
                     route_indices.append(new_route)
-                    st.write(f"Created new route for node {node}")
-                else:
-                    st.error(f"Could not assign node {node} - consider increasing vehicle count")
 
     # Ensure depot at start/end of each route
     for i in range(len(route_indices)):
-        if not route_indices[i]:  # Empty route
+        if not route_indices[i]:
             route_indices[i] = [0, 0]
         else:
             if route_indices[i][0] != 0:
@@ -119,21 +124,20 @@ def cluster_points(points: np.ndarray,
             if route_indices[i][-1] != 0:
                 route_indices[i].append(0)
 
-    # Create full labels array
+    # Create labels array efficiently
     labels = np.zeros(len(points), dtype=int)
     for i, route in enumerate(route_indices):
-        for node in route[1:-1]:  # Skip depot
-            labels[node] = i
+        labels[route[1:-1]] = i  # Vectorized assignment
 
     # Verify assignment
     assigned = set()
     for route in route_indices:
-        assigned.update(route[1:-1])  # Exclude depot
+        assigned.update(route[1:-1])
 
-    if missing := (all_nodes - {0} - assigned):  # Exclude depot
+    if missing := (all_nodes - {0} - assigned):
         st.error(f"Nodes not assigned to any route: {missing}")
     else:
-        st.success("All nodes assigned to routes")
+        st.success(f"All nodes assigned across {len(route_indices)} routes")
 
     return route_indices, labels
 

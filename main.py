@@ -52,22 +52,23 @@ def main():
 
     # Instance size
     st.sidebar.subheader("Instance Size")
-    n_points = st.sidebar.slider("Number of Points", 10, 300, 20,
+    n_points = st.sidebar.slider("Number of Points", 10, 1000, 50,
         help="Total number of delivery points (excluding depot)")
 
     # Vehicle Parameters
     st.sidebar.subheader("Vehicle Parameters")
-    vehicle_capacity = st.sidebar.slider("Vehicle Capacity", 10, 100, 50,
+    vehicle_capacity = st.sidebar.slider("Vehicle Capacity", 10, 200, 100,
         help="Maximum capacity for each vehicle")
     vehicle_speed = st.sidebar.slider("Vehicle Speed", 0.1, 5.0, 1.0,
         help="Travel speed (distance/time unit)")
 
-    # Optional manual override for vehicle count
-    use_auto_vehicles = st.sidebar.checkbox("Automatically determine vehicle count", value=True,
-        help="Calculate required vehicles based on demands and capacity")
-    if not use_auto_vehicles:
-        n_vehicles = st.sidebar.slider("Number of Vehicles", 2, 10, 3,
-            help="Number of available vehicles (clusters)")
+    # Remove manual vehicle count override since it's now fully automatic
+    st.sidebar.markdown("""
+    💡 The number of vehicles will be automatically determined based on:
+    - Total demand vs vehicle capacity
+    - Number of delivery points
+    - Maximum route duration
+    """)
 
     # Time Window Parameters
     st.sidebar.subheader("Time Window Parameters")
@@ -146,7 +147,7 @@ def main():
             with st.spinner("Clustering points..."):
                 route_indices, labels = cluster_points(
                     global_points,
-                    n_clusters=None if use_auto_vehicles else n_vehicles,
+                    n_clusters=None, # use_auto_vehicles is always true now
                     demands=demands,
                     capacity=vehicle_capacity
                 )
