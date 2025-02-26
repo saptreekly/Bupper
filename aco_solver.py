@@ -14,8 +14,9 @@ class ACO:
                  evap_increase: float = 0.05,
                  stagnation_limit: int = 5,
                  speed: float = 1.0,
-                 base_time_penalty: float = 2.0,  # Base penalty for time window violations
-                 lateness_multiplier: float = 1.5):  # Multiplier for increasing penalties
+                 time_penalty_factor: float = 2.0,  # Penalty multiplier for time window violations
+                 base_time_penalty: float = 2.0,    # Base penalty for time window violations
+                 lateness_multiplier: float = 1.5): # Multiplier for increasing penalties
         self.base_ants = base_ants
         self.base_evaporation = base_evaporation
         self.alpha = alpha
@@ -24,6 +25,7 @@ class ACO:
         self.evap_increase = evap_increase
         self.stagnation_limit = stagnation_limit
         self.speed = speed
+        self.time_penalty_factor = time_penalty_factor  # Store the penalty factor
         self.base_time_penalty = base_time_penalty
         self.lateness_multiplier = lateness_multiplier
 
