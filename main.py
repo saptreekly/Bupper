@@ -56,7 +56,7 @@ def main():
 
     if st.button("Generate and Solve VRP"):
         try:
-            # Generate global points array
+            # Generate global points array at the start
             global_points = generate_random_points(n_points + 1)  # +1 for depot
 
             st.write("\n=== Global Points Array Info ===")
@@ -143,7 +143,7 @@ def main():
                         st.metric(f"Route {i+1} Cost", round(length, 2))
 
             with col2:
-                st.metric("Total Points", len(points))
+                st.metric("Total Points", len(global_points))  # Use global_points consistently
                 for i, route in enumerate(all_routes):
                     if route:
                         st.metric(f"Route {i+1} Points", len(route))
