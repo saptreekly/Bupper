@@ -1,7 +1,8 @@
 import numpy as np
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional
 import random
 import math
+from utils import TimeWindow
 
 class ACO:
     def __init__(self, 
@@ -11,7 +12,8 @@ class ACO:
                  beta: float = 2.0,
                  q0: float = 0.1,
                  evap_increase: float = 0.05,
-                 stagnation_limit: int = 5):
+                 stagnation_limit: int = 5,
+                 speed: float = 1.0):
         """
         Initialize ACO solver with adaptive parameters
 
@@ -23,6 +25,7 @@ class ACO:
             q0: Initial pheromone value
             evap_increase: Amount to increase evaporation rate
             stagnation_limit: Iterations without improvement before adapting
+            speed: Travel speed (distance/time unit)
         """
         self.base_ants = base_ants
         self.base_evaporation = base_evaporation
@@ -31,6 +34,7 @@ class ACO:
         self.q0 = q0
         self.evap_increase = evap_increase
         self.stagnation_limit = stagnation_limit
+        self.speed = speed
 
     def calculate_distances(self, points: np.ndarray) -> np.ndarray:
         """Calculate distance matrix between all points."""
@@ -48,33 +52,62 @@ class ACO:
     def construct_solution(self, 
                          start: int,
                          distances: np.ndarray,
-                         pheromone: np.ndarray) -> List[int]:
-        """Construct a single ant's solution."""
+                         pheromone: np.ndarray,
+                         time_windows: Optional[Dict[int, TimeWindow]] = None) -> List[int]:
+        """
+        Construct a single ant's solution considering time windows
+        """
         n = len(distances)
         unvisited = set(range(n))
         unvisited.remove(start)
         current = start
         path = [current]
+        current_time = 0.0
 
         while unvisited:
-            probs = []
-            for j in unvisited:
-                prob = (pheromone[current][j] ** self.alpha) * \
-                      ((1.0 / distances[current][j]) ** self.beta)
-                probs.append((j, prob))
+            feasible_moves = []
+            feasible_probs = []
 
-            total = sum(p[1] for p in probs)
-            normalized_probs = [(j, p/total) for j, p in probs]
-            next_city = random.choices(
-                population=[p[0] for p in normalized_probs],
-                weights=[p[1] for p in normalized_probs]
+            for j in unvisited:
+                # Calculate arrival time at next node
+                travel_time = distances[current][j] / self.speed
+                next_arrival = current_time + travel_time
+
+                # Check time window feasibility
+                is_feasible = True
+                if time_windows:
+                    if current in time_windows:
+                        tw = time_windows[current]
+                        current_time = tw.get_departure_time(current_time)
+                        next_arrival = current_time + travel_time
+                    if j in time_windows:
+                        is_feasible = time_windows[j].is_feasible(next_arrival)
+
+                if is_feasible:
+                    prob = (pheromone[current][j] ** self.alpha) * \
+                          ((1.0 / distances[current][j]) ** self.beta)
+                    feasible_moves.append((j, next_arrival))
+                    feasible_probs.append(prob)
+
+            if not feasible_moves:
+                # No feasible moves, break and return to depot
+                break
+
+            # Select next city
+            total = sum(feasible_probs)
+            normalized_probs = [p/total for p in feasible_probs]
+            selected_idx = random.choices(
+                population=range(len(feasible_moves)),
+                weights=normalized_probs
             )[0]
 
+            next_city, next_time = feasible_moves[selected_idx]
             path.append(next_city)
             unvisited.remove(next_city)
             current = next_city
+            current_time = next_time
 
-        path.append(start)
+        path.append(start)  # Return to depot
         return path
 
     def update_pheromone(self,
@@ -96,13 +129,15 @@ class ACO:
 
     def solve(self, 
              points: np.ndarray,
-             n_iterations: int = 100) -> Tuple[List[int], float]:
+             n_iterations: int = 100,
+             time_windows: Optional[Dict[int, TimeWindow]] = None) -> Tuple[List[int], float]:
         """
-        Solve TSP using adaptive ACO
+        Solve TSP using adaptive ACO with time windows
 
         Args:
             points: Array of (x, y) coordinates
             n_iterations: Number of iterations
+            time_windows: Optional time window constraints
 
         Returns:
             best_path: List of indices representing best path
@@ -128,7 +163,7 @@ class ACO:
 
             # Construct solutions
             for _ in range(self.n_ants):
-                path = self.construct_solution(0, distances, pheromone)
+                path = self.construct_solution(0, distances, pheromone, time_windows)
                 length = sum(distances[path[i]][path[i+1]] 
                            for i in range(len(path)-1))
 

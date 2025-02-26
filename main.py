@@ -2,7 +2,7 @@ import streamlit as st
 import numpy as np
 from aco_solver import ACO
 from local_search import three_opt_improvement
-from utils import validate_points, parse_input_string
+from utils import validate_points, parse_input_string, parse_time_windows
 from visualizer import plot_routes
 from clustering import cluster_points, check_capacity_constraints
 
@@ -10,7 +10,7 @@ def main():
     st.title("Vehicle Routing Problem Solver")
 
     st.write("""
-    ### Multi-Vehicle Routing Problem Solver
+    ### Multi-Vehicle Routing Problem Solver with Time Windows
     This application uses:
     1. K-means clustering for territory assignment
     2. Adaptive Ant Colony Optimization (ACO) with:
@@ -18,6 +18,7 @@ def main():
        - Adaptive evaporation rate
     3. 3-opt Local Search Improvement
     4. Capacity constraints for each vehicle
+    5. Time window constraints for each location
 
     Enter coordinates in the format: x1,y1;x2,y2;x3,y3;...
     """)
@@ -31,6 +32,8 @@ def main():
         help="Number of available vehicles (clusters)")
     vehicle_capacity = st.sidebar.slider("Vehicle Capacity", 10, 100, 50,
         help="Maximum capacity for each vehicle")
+    vehicle_speed = st.sidebar.slider("Vehicle Speed", 0.1, 5.0, 1.0,
+        help="Travel speed (distance/time unit)")
 
     # ACO Parameters
     st.sidebar.subheader("ACO Parameters")
@@ -53,11 +56,19 @@ def main():
         help="Example: 0,0;2,2;1,5;5,2;6,6;8,3"
     )
 
+    # Time windows input
+    time_windows_text = st.text_area(
+        "Enter time windows (format: node:earliest,latest,service_time;...):",
+        value="1:5,15,2;2:10,20,3;3:15,25,2",
+        help="Example: 1:5,15,2 means node 1 must be visited between time 5 and 15, with 2 time units for service. Leave empty for no time constraints."
+    )
+
     if st.button("Solve VRP"):
         try:
             # Parse and validate input
             points_list = parse_input_string(input_text)
             points = validate_points(points_list)
+            time_windows = parse_time_windows(time_windows_text)
 
             if len(points) < n_vehicles * 2:
                 st.error(f"Please enter at least {n_vehicles * 2} points.")
@@ -72,7 +83,8 @@ def main():
                      base_evaporation=base_evaporation,
                      alpha=alpha,
                      evap_increase=evap_increase,
-                     stagnation_limit=stagnation_limit)
+                     stagnation_limit=stagnation_limit,
+                     speed=vehicle_speed)
 
             # Solve for each cluster
             all_routes = []
@@ -96,8 +108,16 @@ def main():
                         st.warning(f"Cluster {i} exceeds vehicle capacity!")
                         continue
 
+                    # Get time windows for cluster points
+                    cluster_time_windows = {
+                        idx: time_windows[cluster_indices[idx]]
+                        for idx in range(len(cluster_indices))
+                        if cluster_indices[idx] in time_windows
+                    }
+
                     # Solve TSP for this cluster
-                    route, length = aco.solve(cluster_points_array, n_iterations)
+                    route, length = aco.solve(cluster_points_array, n_iterations,
+                                           cluster_time_windows)
 
                     # Convert route indices back to original point indices
                     original_route = [cluster_indices[idx] for idx in route]
@@ -105,7 +125,7 @@ def main():
                     # Apply 3-opt improvement
                     distances = aco.calculate_distances(points[cluster_indices])
                     improved_route, improved_length = three_opt_improvement(
-                        route, distances)
+                        route, distances, cluster_time_windows, vehicle_speed)
 
                     # Convert improved route to original indices
                     improved_original_route = [cluster_indices[idx] for idx in improved_route]
@@ -117,7 +137,7 @@ def main():
             st.subheader("Results")
 
             # Summary metrics
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric("Total Routes", len([r for r in all_routes if r]))
                 for i, length in enumerate(all_lengths):
@@ -130,10 +150,23 @@ def main():
                     if route:
                         st.metric(f"Route {i+1} Points", len(route))
 
+            with col3:
+                st.metric("Speed", vehicle_speed)
+                if time_windows:
+                    st.metric("Time Windows", len(time_windows))
+
             # Visualization
             st.subheader("Route Visualization")
             plot_routes(points, all_routes, labels,
                      "Vehicle Routes (K-means + ACO + 3-opt)")
+
+            # Time window details
+            if time_windows:
+                st.subheader("Time Window Details")
+                st.write("Time windows for each node:")
+                for node, tw in time_windows.items():
+                    st.write(f"Node {node}: [{tw.earliest}, {tw.latest}] "
+                            f"(Service time: {tw.service_time})")
 
         except ValueError as e:
             st.error(f"Error: {str(e)}")
