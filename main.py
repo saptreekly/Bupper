@@ -5,6 +5,7 @@ from local_search import three_opt_improvement
 from utils import validate_points, parse_input_string, parse_time_windows
 from visualizer import plot_routes
 from clustering import cluster_points, check_capacity_constraints
+from cross_route_optimizer import optimize_cross_route
 
 def main():
     st.title("Vehicle Routing Problem Solver")
@@ -48,6 +49,11 @@ def main():
         alpha = st.slider("Alpha (Pheromone Importance)", 0.1, 5.0, 1.0)
         evap_increase = st.slider("Evaporation Rate Increase", 0.01, 0.2, 0.05)
         stagnation_limit = st.slider("Stagnation Limit", 2, 10, 5)
+        enable_cross_route = st.checkbox("Enable Cross-Route Optimization", True,
+            help="Try to improve solution by moving nodes between routes")
+        if enable_cross_route:
+            max_cross_iterations = st.slider("Max Cross-Route Iterations", 10, 200, 100,
+                help="Maximum number of cross-route improvement attempts")
 
     # Input coordinates
     input_text = st.text_area(
@@ -133,11 +139,35 @@ def main():
                     all_routes.append(improved_original_route)
                     all_lengths.append(improved_length)
 
+            # Apply cross-route optimization if enabled
+            if enable_cross_route:
+                with st.spinner("Performing cross-route optimization..."):
+                    # Prepare demands (simple model: each point has demand of 1)
+                    demands = [1] * len(points)
+
+                    improved_routes, total_distance = optimize_cross_route(
+                        all_routes,
+                        aco.calculate_distances(points),
+                        demands,
+                        vehicle_capacity,
+                        time_windows,
+                        vehicle_speed,
+                        max_cross_iterations
+                    )
+
+                    # Update routes if improvement found
+                    if total_distance < sum(all_lengths):
+                        all_routes = improved_routes
+                        all_lengths = [sum(aco.calculate_distances(points)[route[i]][route[i+1]]
+                                         for i in range(len(route)-1))
+                                     for route in improved_routes]
+                        st.success("Cross-route optimization improved the solution!")
+
             # Display results
             st.subheader("Results")
 
             # Summary metrics
-            col1, col2, col3 = st.columns(3)
+            col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.metric("Total Routes", len([r for r in all_routes if r]))
                 for i, length in enumerate(all_lengths):
@@ -154,6 +184,11 @@ def main():
                 st.metric("Speed", vehicle_speed)
                 if time_windows:
                     st.metric("Time Windows", len(time_windows))
+
+            with col4:
+                st.metric("Total Distance", round(sum(all_lengths), 2))
+                if enable_cross_route:
+                    st.metric("Cross-Route Iterations", max_cross_iterations)
 
             # Visualization
             st.subheader("Route Visualization")
