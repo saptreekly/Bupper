@@ -198,7 +198,16 @@ class ACO:
                 break
 
             total = sum(probs)
-            normalized_probs = [p/total for p in probs]
+
+            # Handle zero or non-finite probability sum
+            if total == 0 or not np.isfinite(total):
+                # Use uniform distribution as fallback
+                normalized_probs = [1.0 / len(probs)] * len(probs)
+                import streamlit as st
+                st.write(f"Warning: Using uniform distribution due to {'zero' if total == 0 else 'non-finite'} probability sum")
+            else:
+                normalized_probs = [p/total for p in probs]
+
             selected_idx = random.choices(
                 population=range(len(moves)),
                 weights=normalized_probs
