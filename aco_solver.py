@@ -77,7 +77,7 @@ class ACO:
         current = 0  # Start at depot
         path = [current]
         current_time = 0.0
-        node_arrival_times = {current: current_time}
+        node_arrival_times = {current: current_time}  # Using global indices for arrival times
 
         while unvisited:
             moves = []
@@ -117,7 +117,7 @@ class ACO:
 
             next_city, arrival_time, _ = moves[selected_idx]
             path.append(next_city)
-            node_arrival_times[next_city] = arrival_time
+            node_arrival_times[next_city] = arrival_time  # Store global node index
 
             # Update current state
             unvisited.remove(next_city)
@@ -150,6 +150,7 @@ class ACO:
             return distance_cost
 
         time_penalties = 0
+        # Arrival times already use global indices, no conversion needed
         for node, arrival_time in arrival_times.items():
             if node in time_windows:
                 penalty = self.calculate_time_window_penalty(
@@ -234,6 +235,6 @@ class ACO:
 
             # Update pheromone
             pheromone = self.update_pheromone(pheromone, all_paths, all_costs,
-                                            current_evaporation)
+                                             current_evaporation)
 
         return best_path, best_cost, best_arrival_times
