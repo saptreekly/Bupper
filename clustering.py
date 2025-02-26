@@ -31,7 +31,7 @@ def cluster_points(points: np.ndarray, n_clusters: int) -> Tuple[List[List[int]]
         route = [0]
         # Add indices of points in this cluster (adding 1 because global indices start after depot)
         cluster_mask = delivery_labels == i
-        cluster_indices = np.where(cluster_mask)[0] + 1
+        cluster_indices = np.where(cluster_mask)[0] + 1  # Convert to global indices
         route.extend(cluster_indices)
         route_indices.append(route)
 
@@ -40,17 +40,7 @@ def cluster_points(points: np.ndarray, n_clusters: int) -> Tuple[List[List[int]]
 def check_capacity_constraints(route: List[int], 
                            demands: List[float],
                            capacity: float) -> bool:
-    """
-    Check if route satisfies capacity constraint
-
-    Args:
-        route: List of node indices in route
-        demands: Demand for each point
-        capacity: Vehicle capacity
-
-    Returns:
-        bool: True if constraints are satisfied
-    """
+    """Check if route satisfies capacity constraint"""
     # Skip depot (first point) when summing demands
     total_demand = sum(demands[i] for i in route[1:])  # Skip depot
     return total_demand <= capacity

@@ -17,6 +17,12 @@ def plot_routes(points: np.ndarray,
         labels: Cluster assignment for each point
         title: Plot title
     """
+    # Verify route indices are within bounds
+    n_points = len(points)
+    for route in routes:
+        if any(idx >= n_points for idx in route):
+            raise ValueError(f"Route contains index >= {n_points}. All indices must be < {n_points}")
+
     fig, ax = plt.subplots(figsize=(10, 6))
 
     # Generate distinct colors for each route
