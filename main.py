@@ -51,8 +51,18 @@ def main():
 
     # ACO Parameters
     st.sidebar.subheader("ACO Parameters")
-    time_penalty_factor = st.sidebar.slider("Time Window Penalty Factor", 1.0, 5.0, 2.0,
+    #Time penalty factor moved to repair parameters section below
+    #time_penalty_factor = st.sidebar.slider("Time Window Penalty Factor", 1.0, 5.0, 2.0,
+    #    help="Penalty multiplier for time window violations")
+
+    # Add new parameters to sidebar
+    st.sidebar.subheader("Time Window Repair Parameters")
+    repair_iterations = st.sidebar.slider("Max Repair Iterations", 10, 200, 50,
+        help="Maximum number of iterations for time window repair")
+    time_penalty_factor = st.sidebar.slider("Time Window Penalty Factor", 1.0, 10.0, 2.0,
         help="Penalty multiplier for time window violations")
+    repair_threshold = st.sidebar.slider("Repair Cost Threshold", 0.1, 2.0, 0.5,
+        help="Maximum allowed cost increase during repair (multiplier)")
 
     if st.button("Generate and Solve VRP"):
         try:
@@ -155,7 +165,7 @@ def main():
             # Visualization - Always use full global points array
             st.subheader("Route Visualization")
             plot_routes(global_points, all_routes, labels,
-                     "Vehicle Routes (K-means + ACO)")
+                         "Vehicle Routes (K-means + ACO)")
 
             # Time window analysis
             if time_windows:

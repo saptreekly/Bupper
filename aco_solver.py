@@ -45,56 +45,91 @@ class ACO:
     def calculate_time_window_penalty(self,
                                    arrival_time: float,
                                    time_window: TimeWindow) -> float:
-        """Calculate adaptive penalty for time window violation."""
+        """Calculate aggressive penalty for time window violation."""
         if arrival_time < time_window.earliest:
             # No penalty for early arrival (will wait)
             return 0
         elif arrival_time > time_window.latest:
             # Exponentially increasing penalty based on lateness
             lateness = arrival_time - time_window.latest
-            penalty_factor = self.base_time_penalty * (self.lateness_multiplier ** math.log2(1 + lateness))
-            return lateness * penalty_factor
+            # More aggressive penalty calculation
+            penalty = (lateness * self.time_penalty_factor * 
+                      (1.0 + math.log2(1 + lateness)))
+            return penalty
         return 0
 
     def repair_time_windows(self,
                          route: List[int],
                          distances: np.ndarray,
-                         time_windows: Dict[int, TimeWindow]) -> Tuple[List[int], Dict[int, float]]:
+                         time_windows: Dict[int, TimeWindow],
+                         max_iterations: int = 50,
+                         cost_threshold: float = 1.5) -> Tuple[List[int], Dict[int, float]]:
         """
-        Attempt to repair time window violations using a greedy approach.
-        Returns improved route and arrival times.
+        Aggressively repair time window violations using iterative improvement
+        with detailed logging.
         """
         if len(route) <= 2:  # Nothing to repair for routes with just depot
             return route, {0: 0.0}
 
+        import streamlit as st
+        st.write("\n=== Time Window Repair Process ===")
+
         best_route = route.copy()
         best_arrival_times = self.calculate_arrival_times(route, distances, time_windows)
         best_violations = self.count_time_violations(best_arrival_times, time_windows)
+        initial_cost = self.calculate_total_cost(route, distances, best_arrival_times, time_windows)
+        best_cost = initial_cost
 
-        # Try simple swaps to reduce violations
-        improvement = True
-        while improvement and best_violations > 0:
-            improvement = False
-            # Skip depot (index 0) in swaps
-            for i in range(1, len(route) - 1):
+        st.write(f"Initial state:")
+        st.write(f"- Violations: {best_violations}")
+        st.write(f"- Cost: {best_cost:.2f}")
+
+        iteration = 0
+        while iteration < max_iterations and best_violations > 0:
+            iteration += 1
+            improvement_found = False
+
+            # Try all possible 2-opt swaps
+            for i in range(1, len(route) - 2):
                 for j in range(i + 1, len(route) - 1):
-                    # Try swapping positions i and j
-                    new_route = route.copy()
-                    new_route[i], new_route[j] = new_route[j], new_route[i]
-
+                    # Try reversing segment between i and j
+                    new_route = route[:i] + route[i:j+1][::-1] + route[j+1:]
                     new_arrival_times = self.calculate_arrival_times(
                         new_route, distances, time_windows)
                     new_violations = self.count_time_violations(
                         new_arrival_times, time_windows)
+                    new_cost = self.calculate_total_cost(
+                        new_route, distances, new_arrival_times, time_windows)
 
-                    if new_violations < best_violations:
+                    # Accept if violations decrease or if cost improves without increasing violations
+                    if (new_violations < best_violations or 
+                        (new_violations == best_violations and 
+                         new_cost < best_cost * cost_threshold)):
+
+                        improvement_found = True
                         best_route = new_route
                         best_arrival_times = new_arrival_times
                         best_violations = new_violations
-                        improvement = True
+                        best_cost = new_cost
+
+                        st.write(f"\nImprovement found (Iteration {iteration}):")
+                        st.write(f"- Swapped positions {i} and {j}")
+                        st.write(f"- New violations: {best_violations}")
+                        st.write(f"- New cost: {best_cost:.2f}")
                         break
-                if improvement:
+
+                if improvement_found:
                     break
+
+            if not improvement_found:
+                break
+
+        # Final summary
+        improvement_pct = ((initial_cost - best_cost) / initial_cost) * 100
+        st.write(f"\nRepair completed after {iteration} iterations:")
+        st.write(f"- Initial violations: {self.count_time_violations(self.calculate_arrival_times(route, distances, time_windows), time_windows)}")
+        st.write(f"- Final violations: {best_violations}")
+        st.write(f"- Cost improvement: {improvement_pct:.1f}%")
 
         return best_route, best_arrival_times
 
