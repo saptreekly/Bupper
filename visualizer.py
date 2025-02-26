@@ -17,22 +17,28 @@ def plot_routes(points: np.ndarray,
         labels: Cluster assignment for each point
         title: Plot title
     """
-    # Debug logging
+    # Enhanced debug logging
     st.write("\n=== Route Visualization Debug Info ===")
-    st.write(f"Global points array shape: {points.shape}")
+    st.write(f"Points array type: {type(points)}")
+    st.write(f"Points array shape: {points.shape}")
+    st.write(f"Points array length: {len(points)}")
 
-    # Verify indices are within bounds
+    # Verify route indices against array bounds
     n_points = len(points)
     for i, route in enumerate(routes):
-        st.write(f"Route {i} indices: {route}")
         if route:
             max_idx = max(route)
+            st.write(f"Route {i}: {route}")
+            st.write(f"Route {i} length: {len(route)}")
             st.write(f"Route {i} max index: {max_idx}")
             if max_idx >= n_points:
-                raise ValueError(
-                    f"Route {i} contains index {max_idx} which exceeds "
-                    f"points array size {n_points}"
+                error_msg = (
+                    f"Error: Route {i} contains index {max_idx} which exceeds "
+                    f"points array size {n_points}. Routes must use indices "
+                    f"from 0 to {n_points-1}."
                 )
+                st.error(error_msg)
+                raise ValueError(error_msg)
 
     # Create the plot
     fig, ax = plt.subplots(figsize=(10, 6))

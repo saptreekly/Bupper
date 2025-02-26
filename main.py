@@ -56,8 +56,14 @@ def main():
 
     if st.button("Generate and Solve VRP"):
         try:
-            # Generate random points and time windows
-            points = generate_random_points(n_points + 1)  # +1 for depot
+            # Generate global points array
+            global_points = generate_random_points(n_points + 1)  # +1 for depot
+
+            st.write("\n=== Global Points Array Info ===")
+            st.write(f"Global points array shape: {global_points.shape}")
+            st.write(f"Number of points (including depot): {len(global_points)}")
+
+            # Generate time windows using global indices
             time_windows = generate_random_time_windows(
                 n_points + 1,
                 horizon=time_horizon,
@@ -65,16 +71,15 @@ def main():
                 max_window=max_window
             )
 
-            st.write("\n=== Points Array Debug Info ===")
-            st.write(f"Global points array shape: {points.shape}")
-
-            # Cluster points
+            # Cluster points - keep original points array intact
             with st.spinner("Clustering points..."):
-                route_indices, labels = cluster_points(points, n_vehicles)
+                route_indices, labels = cluster_points(global_points, n_vehicles)
 
-            st.write("\n=== Route Indices Debug Info ===")
+            st.write("\n=== Initial Routes Debug Info ===")
             for i, route in enumerate(route_indices):
                 st.write(f"Initial route {i}: {route}")
+                if route:
+                    st.write(f"Max index in route {i}: {max(route)}")
 
             # Initialize ACO solver
             aco = ACO(base_evaporation=0.15,
@@ -99,7 +104,7 @@ def main():
                         continue
 
                     # Simple demand model: each point has demand of 1
-                    demands = [1] * len(points)  # Global demands array
+                    demands = [1.0] * len(global_points)  # Use float for demands
 
                     # Check capacity constraint
                     if not check_capacity_constraints(route_nodes, demands, vehicle_capacity):
@@ -108,7 +113,7 @@ def main():
 
                     # Solve TSP for this cluster using global indices
                     route, cost, arrival_times = aco.solve(
-                        points, 
+                        global_points,  # Always use global points array
                         route_nodes,
                         n_iterations=100,
                         time_windows=time_windows
@@ -121,6 +126,10 @@ def main():
             st.write("\n=== Final Routes Debug Info ===")
             for i, route in enumerate(all_routes):
                 st.write(f"Final route {i}: {route}")
+                if route:
+                    st.write(f"Max index in route {i}: {max(route)}")
+                    if max(route) >= len(global_points):
+                        st.error(f"Route {i} contains invalid index: {max(route)} >= {len(global_points)}")
 
             # Display results
             st.subheader("Results")
@@ -145,7 +154,7 @@ def main():
 
             # Visualization - Always use full global points array
             st.subheader("Route Visualization")
-            plot_routes(points, all_routes, labels,
+            plot_routes(global_points, all_routes, labels,
                      "Vehicle Routes (K-means + ACO)")
 
             # Time window analysis
@@ -181,7 +190,8 @@ def main():
                         )
 
         except Exception as e:
-            st.error(f"An unexpected error occurred: {str(e)}")
+            st.error(f"An error occurred: {str(e)}")
+            st.exception(e)  # This will show the full traceback
 
 if __name__ == "__main__":
     main()
