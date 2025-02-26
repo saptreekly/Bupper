@@ -54,7 +54,7 @@ def main():
 
     # Instance size
     st.sidebar.subheader("Instance Size")
-    n_points = st.sidebar.slider("Number of Points", 10, 100, 20,
+    n_points = st.sidebar.slider("Number of Points", 10, 300, 20,
         help="Total number of delivery points (excluding depot)")
     n_vehicles = st.sidebar.slider("Number of Vehicles", 2, 10, 3,
         help="Number of available vehicles (clusters)")
