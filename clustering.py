@@ -31,15 +31,18 @@ def cluster_points(points: np.ndarray, n_clusters: int) -> Tuple[List[np.ndarray
     local2global = []  # Mapping from local to global indices for each cluster
 
     for i in range(n_clusters):
+        # First, get global indices for this cluster
+        # Start with depot (global index 0)
+        global_indices = [0]
+        # Add indices of points in this cluster
         cluster_mask = delivery_labels == i
-        cluster_points = np.vstack([depot, delivery_points[cluster_mask]])
-        clustered_points.append(cluster_points)
+        cluster_global_indices = np.where(cluster_mask)[0] + 1  # Add 1 because global indices start after depot
+        global_indices.extend(cluster_global_indices)
 
-        # Create local to global mapping
-        # First point (0) in local space maps to depot (0) in global space
-        global_indices = [0]  
-        # Add other points' global indices (adding 1 because global indices start after depot)
-        global_indices.extend(np.where(labels == i)[0])
+        # Build cluster points array in exact order of global_indices
+        cluster_points = np.vstack([points[idx] for idx in global_indices])
+
+        clustered_points.append(cluster_points)
         local2global.append(global_indices)
 
     return clustered_points, labels, local2global
