@@ -5,6 +5,9 @@ import math
 from utils import TimeWindow
 
 class ACO:
+    # Class-level debug flag
+    DEBUG = False  # Set to True for verbose logging
+
     def __init__(self, 
                  base_ants: int = 40,
                  base_evaporation: float = 0.15,
@@ -25,7 +28,7 @@ class ACO:
         self.evap_increase = evap_increase
         self.stagnation_limit = stagnation_limit
         self.speed = speed
-        self.time_penalty_factor = time_penalty_factor  # Store the penalty factor
+        self.time_penalty_factor = time_penalty_factor
         self.base_time_penalty = base_time_penalty
         self.lateness_multiplier = lateness_multiplier
 
@@ -47,20 +50,11 @@ class ACO:
                                    time_window: TimeWindow) -> float:
         """Calculate clamped penalty for time window violation."""
         if arrival_time < time_window.earliest:
-            # No penalty for early arrival (will wait)
             return 0
         elif arrival_time > time_window.latest:
-            # Calculate lateness
-            lateness = arrival_time - time_window.latest
-
-            # Clamp lateness to avoid overflow
-            MAX_LATENESS = 1000.0
-            lateness = min(lateness, MAX_LATENESS)
-
-            # Calculate penalty with clamped exponential factor
+            lateness = min(arrival_time - time_window.latest, 1000.0)  # Clamp maximum lateness
             base_penalty = lateness * self.time_penalty_factor
-            exp_factor = min(1.0 + math.log2(1 + lateness), 10.0)  # Clamp maximum exponential factor
-
+            exp_factor = min(1.0 + math.log2(1 + lateness), 10.0)  # Clamp exponential factor
             return base_penalty * exp_factor
         return 0
 
@@ -70,15 +64,11 @@ class ACO:
                          time_windows: Dict[int, TimeWindow],
                          max_iterations: int = 50,
                          cost_threshold: float = 1.5) -> Tuple[List[int], Dict[int, float]]:
-        """
-        Aggressively repair time window violations using iterative improvement
-        with detailed logging.
-        """
-        if len(route) <= 2:  # Nothing to repair for routes with just depot
+        """Repair time window violations with minimal logging."""
+        if len(route) <= 2:
             return route, {0: 0.0}
 
         import streamlit as st
-        st.write("\n=== Time Window Repair Process ===")
 
         best_route = route.copy()
         best_arrival_times = self.calculate_arrival_times(route, distances, time_windows)
@@ -86,56 +76,40 @@ class ACO:
         initial_cost = self.calculate_total_cost(route, distances, best_arrival_times, time_windows)
         best_cost = initial_cost
 
-        st.write(f"Initial state:")
-        st.write(f"- Violations: {best_violations}")
-        st.write(f"- Cost: {best_cost:.2f}")
+        # Log initial state
+        st.write(f"Starting repair: {best_violations} violations, cost: {best_cost:.2f}")
 
         iteration = 0
         while iteration < max_iterations and best_violations > 0:
             iteration += 1
             improvement_found = False
 
-            # Try all possible 2-opt swaps
             for i in range(1, len(route) - 2):
                 for j in range(i + 1, len(route) - 1):
-                    # Try reversing segment between i and j
                     new_route = route[:i] + route[i:j+1][::-1] + route[j+1:]
-                    new_arrival_times = self.calculate_arrival_times(
-                        new_route, distances, time_windows)
-                    new_violations = self.count_time_violations(
-                        new_arrival_times, time_windows)
-                    new_cost = self.calculate_total_cost(
-                        new_route, distances, new_arrival_times, time_windows)
+                    new_arrival_times = self.calculate_arrival_times(new_route, distances, time_windows)
+                    new_violations = self.count_time_violations(new_arrival_times, time_windows)
+                    new_cost = self.calculate_total_cost(new_route, distances, new_arrival_times, time_windows)
 
-                    # Accept if violations decrease or if cost improves without increasing violations
                     if (new_violations < best_violations or 
-                        (new_violations == best_violations and 
-                         new_cost < best_cost * cost_threshold)):
-
+                        (new_violations == best_violations and new_cost < best_cost * cost_threshold)):
                         improvement_found = True
                         best_route = new_route
                         best_arrival_times = new_arrival_times
                         best_violations = new_violations
                         best_cost = new_cost
 
-                        st.write(f"\nImprovement found (Iteration {iteration}):")
-                        st.write(f"- Swapped positions {i} and {j}")
-                        st.write(f"- New violations: {best_violations}")
-                        st.write(f"- New cost: {best_cost:.2f}")
+                        if self.DEBUG:
+                            st.write(f"Iteration {iteration}: {best_violations} violations, cost: {best_cost:.2f}")
                         break
-
                 if improvement_found:
                     break
-
             if not improvement_found:
                 break
 
-        # Final summary
+        # Log final results
         improvement_pct = ((initial_cost - best_cost) / initial_cost) * 100
-        st.write(f"\nRepair completed after {iteration} iterations:")
-        st.write(f"- Initial violations: {self.count_time_violations(self.calculate_arrival_times(route, distances, time_windows), time_windows)}")
-        st.write(f"- Final violations: {best_violations}")
-        st.write(f"- Cost improvement: {improvement_pct:.1f}%")
+        st.write(f"Repair complete: {best_violations} violations, cost improved by {improvement_pct:.1f}%")
 
         return best_route, best_arrival_times
 
@@ -181,9 +155,7 @@ class ACO:
                      route_nodes: List[int],
                      distances: np.ndarray,
                      pheromone: np.ndarray) -> List[int]:
-        """
-        Construct a single ant's solution with detailed move logging
-        """
+        """Construct a single ant's solution with minimal logging."""
         unvisited = set(route_nodes[1:])  # Skip depot
         current = 0  # Start at depot
         path = [current]
@@ -194,73 +166,49 @@ class ACO:
             moves = []
             probs = []
 
-            st.write(f"\n=== Evaluating moves from node {current} ===")
+            # Log only if in debug mode
+            if self.DEBUG:
+                st.write(f"\nEvaluating moves from node {current}")
 
             for j in unvisited:
-                # Calculate components
+                # Calculate move probability components
                 pheromone_value = pheromone[current][j] ** self.alpha
-                distance_value = distances[current][j]
-
-                # Avoid division by zero in distance calculation
-                if distance_value == 0:
-                    distance_factor = 1e6  # Large but finite value
-                else:
-                    distance_factor = (1.0 / distance_value) ** self.beta
-
-                # Calculate probability
+                distance_value = max(distances[current][j], 1e-6)  # Avoid division by zero
+                distance_factor = (1.0 / distance_value) ** self.beta
                 prob = pheromone_value * distance_factor
 
-                # Clamp any non-finite values
+                # Handle non-finite probabilities
                 if not np.isfinite(prob) or np.isnan(prob):
-                    st.write(f"Warning: Non-finite probability detected for move to node {j}")
-                    st.write(f"- Pheromone: {pheromone_value:.2e}")
-                    st.write(f"- Distance: {distance_value:.2e}")
-                    st.write(f"- Raw probability: {prob}")
-                    prob = 1e-6  # Clamp to small finite value
+                    if self.DEBUG:
+                        st.write(f"Non-finite probability for move {current}->{j}, clamping")
+                    prob = 1e-6
 
                 moves.append(j)
                 probs.append(prob)
 
-                # Log move details
-                st.write(f"\nCandidate move to node {j}:")
-                st.write(f"- Pheromone value: {pheromone_value:.2e}")
-                st.write(f"- Distance: {distance_value:.2f}")
-                st.write(f"- Distance factor: {distance_factor:.2e}")
-                st.write(f"- Final probability: {prob:.2e}")
-
-            # Handle total probability calculation
+            # Normalize probabilities
             total = sum(probs)
-            if total == 0:
-                st.write("\nWarning: Zero total probability detected")
-                st.write("Using uniform distribution as fallback")
+            if total == 0 or not np.isfinite(total):
+                if self.DEBUG:
+                    st.write("Using uniform distribution due to invalid probabilities")
                 normalized_probs = [1.0 / len(probs)] * len(probs)
             else:
-                # Normalize probabilities, clamping any extreme values
-                normalized_probs = []
-                for p in probs:
-                    norm_p = p / total
-                    if not np.isfinite(norm_p) or np.isnan(norm_p):
-                        norm_p = 1e-6
-                    normalized_probs.append(norm_p)
-
+                normalized_probs = [max(1e-6, p/total) for p in probs]
                 # Renormalize if needed
-                norm_total = sum(normalized_probs)
-                if norm_total != 1.0:
-                    normalized_probs = [p / norm_total for p in normalized_probs]
+                total = sum(normalized_probs)
+                normalized_probs = [p/total for p in normalized_probs]
 
             # Select next city
             selected_idx = random.choices(
                 population=range(len(moves)),
                 weights=normalized_probs
             )[0]
-
             next_city = moves[selected_idx]
             path.append(next_city)
             unvisited.remove(next_city)
             current = next_city
 
-        # Return to depot
-        path.append(0)
+        path.append(0)  # Return to depot
         return path
 
     def calculate_total_cost(self,
