@@ -65,6 +65,12 @@ def main():
     alns_frequency = st.sidebar.slider("ALNS Frequency", 5, 20, 10,
         help="Apply ALNS every N iterations")
 
+    # Added Debug Options
+    st.sidebar.subheader("Debug Options")
+    verbose_logging = st.sidebar.checkbox("Enable Detailed Logging", False,
+        help="Show detailed optimization progress (may slow down UI)")
+
+
     if st.button("Generate and Solve VRP"):
         try:
             # Generate global points array at the start
@@ -94,13 +100,14 @@ def main():
 
             # Initialize ACO solver with new parameters
             aco = ACO(base_evaporation=0.15,
-                     alpha=1.5,
-                     beta=2.5,
-                     evap_increase=0.05,
-                     stagnation_limit=5,
-                     speed=vehicle_speed,
-                     time_penalty_factor=time_penalty_factor,
-                     max_parallel_ants=parallel_ants)
+                      alpha=1.5,
+                      beta=2.5,
+                      evap_increase=0.05,
+                      stagnation_limit=5,
+                      speed=vehicle_speed,
+                      time_penalty_factor=time_penalty_factor,
+                      max_parallel_ants=parallel_ants,
+                      verbose=verbose_logging)  # Add verbosity control
 
             # Solve for each cluster
             all_routes = []
