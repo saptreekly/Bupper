@@ -2,7 +2,7 @@ import numpy as np
 from typing import List, Tuple
 from sklearn.cluster import KMeans
 
-def cluster_points(points: np.ndarray, n_clusters: int) -> Tuple[List[np.ndarray], List[int]]:
+def cluster_points(points: np.ndarray, n_clusters: int) -> Tuple[List[np.ndarray], List[int], List[List[int]]]:
     """
     Cluster points using K-means, excluding depot (node 0)
 
@@ -13,6 +13,7 @@ def cluster_points(points: np.ndarray, n_clusters: int) -> Tuple[List[np.ndarray
     Returns:
         clustered_points: List of arrays containing points for each cluster
         labels: Cluster assignment for each point
+        local2global: List of lists mapping local indices to global indices
     """
     # Separate depot and delivery points
     depot = points[0]
@@ -27,12 +28,21 @@ def cluster_points(points: np.ndarray, n_clusters: int) -> Tuple[List[np.ndarray
 
     # Group points by cluster, always including depot
     clustered_points = []
+    local2global = []  # Mapping from local to global indices for each cluster
+
     for i in range(n_clusters):
         cluster_mask = delivery_labels == i
         cluster_points = np.vstack([depot, delivery_points[cluster_mask]])
         clustered_points.append(cluster_points)
 
-    return clustered_points, labels
+        # Create local to global mapping
+        # First point (0) in local space maps to depot (0) in global space
+        global_indices = [0]  
+        # Add other points' global indices (adding 1 because global indices start after depot)
+        global_indices.extend(np.where(labels == i)[0])
+        local2global.append(global_indices)
+
+    return clustered_points, labels, local2global
 
 def check_capacity_constraints(cluster_points: np.ndarray, 
                             demands: List[float],

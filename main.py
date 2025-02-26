@@ -54,15 +54,6 @@ def main():
     time_penalty_factor = st.sidebar.slider("Time Window Penalty Factor", 1.0, 5.0, 2.0,
         help="Penalty multiplier for time window violations")
 
-    # Advanced Parameters
-    st.sidebar.subheader("Advanced Parameters")
-    with st.sidebar.expander("Advanced Settings"):
-        enable_cross_route = st.checkbox("Enable Cross-Route Optimization", True,
-            help="Try to improve solution by moving nodes between routes")
-        if enable_cross_route:
-            max_cross_iterations = st.slider("Max Cross-Route Iterations", 10, 200, 100,
-                help="Maximum number of cross-route improvement attempts")
-
     if st.button("Generate and Solve VRP"):
         try:
             # Generate random points and time windows
@@ -76,7 +67,7 @@ def main():
 
             # Cluster points
             with st.spinner("Clustering points..."):
-                clustered_points, labels = cluster_points(points, n_vehicles)
+                clustered_points, labels, local2global = cluster_points(points, n_vehicles)
 
             # Initialize ACO solver
             aco = ACO(base_evaporation=0.15,  # Increased from 0.1
@@ -101,40 +92,30 @@ def main():
                         continue
 
                     # Get indices of points in this cluster
-                    cluster_indices = np.where(labels == i)[0]
+                    cluster_l2g = local2global[i]  # Local to global mapping for this cluster
 
                     # Simple demand model: each point has demand of 1
-                    demands = [1] * len(cluster_indices)
+                    demands = [1] * len(cluster_l2g)
 
                     # Check capacity constraint
                     if not check_capacity_constraints(cluster_points_array, demands, vehicle_capacity):
                         st.warning(f"Cluster {i} exceeds vehicle capacity!")
                         continue
 
-                    # Get time windows for cluster points
-                    cluster_time_windows = {
-                        idx: time_windows[cluster_indices[idx]]
-                        for idx in range(len(cluster_indices))
-                        if cluster_indices[idx] in time_windows
-                    }
-
                     # Solve TSP for this cluster
                     route, cost, arrival_times = aco.solve(
                         cluster_points_array, 
                         n_iterations=100,
-                        time_windows=cluster_time_windows
+                        time_windows=time_windows,
+                        local2global=cluster_l2g
                     )
 
-                    # Convert route indices back to original point indices
-                    original_route = [cluster_indices[idx] for idx in route]
-                    original_arrival_times = {
-                        cluster_indices[node]: time 
-                        for node, time in arrival_times.items()
-                    }
+                    # Convert route indices to global indices
+                    global_route = [cluster_l2g[idx] for idx in route]
 
-                    all_routes.append(original_route)
+                    all_routes.append(global_route)
                     all_lengths.append(cost)
-                    all_arrival_times.append(original_arrival_times)
+                    all_arrival_times.append(arrival_times)
 
             # Display results
             st.subheader("Results")

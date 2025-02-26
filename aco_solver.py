@@ -69,7 +69,8 @@ class ACO:
                          start: int,
                          distances: np.ndarray,
                          pheromone: np.ndarray,
-                         time_windows: Optional[Dict[int, TimeWindow]] = None) -> Tuple[List[int], Dict[int, float]]:
+                         time_windows: Optional[Dict[int, TimeWindow]] = None,
+                         local2global: Optional[List[int]] = None) -> Tuple[List[int], Dict[int, float]]:
         """
         Construct a single ant's solution considering time windows
         """
@@ -79,7 +80,7 @@ class ACO:
         current = start
         path = [current]
         current_time = 0.0
-        node_arrival_times = {start: current_time}
+        node_arrival_times = {local2global[start] if local2global else start: current_time}
 
         while unvisited:
             moves = []
@@ -93,11 +94,14 @@ class ACO:
                 pheromone_factor = pheromone[current][j] ** self.alpha
                 distance_factor = (1.0 / distances[current][j]) ** self.beta
 
+                # Convert local index to global for time window check
+                global_j = local2global[j] if local2global else j
+
                 # Add time window influence
                 time_penalty = 0
-                if time_windows and j in time_windows:
+                if time_windows and global_j in time_windows:
                     time_penalty = self.calculate_time_window_penalty(
-                        next_arrival, time_windows[j])
+                        next_arrival, time_windows[global_j])
                     # Reduce attractiveness based on time window violation
                     if time_penalty > 0:
                         distance_factor *= math.exp(-time_penalty)
@@ -119,21 +123,24 @@ class ACO:
 
             next_city, arrival_time, _ = moves[selected_idx]
             path.append(next_city)
-            node_arrival_times[next_city] = arrival_time
+            global_next = local2global[next_city] if local2global else next_city
+            node_arrival_times[global_next] = arrival_time
 
             # Update current state
             unvisited.remove(next_city)
             current = next_city
-            if time_windows and next_city in time_windows:
-                tw = time_windows[next_city]
+            global_current = local2global[current] if local2global else current
+
+            if time_windows and global_current in time_windows:
+                tw = time_windows[global_current]
                 current_time = max(arrival_time, tw.earliest) + tw.service_time
             else:
                 current_time = arrival_time
 
-        # Return to depot
-        path.append(start)
-        final_travel_time = distances[current][start] / self.speed
-        node_arrival_times[start] = current_time + final_travel_time
+        # Return to depot (always index 0 in both local and global space)
+        path.append(0)
+        final_travel_time = distances[current][0] / self.speed
+        node_arrival_times[0] = current_time + final_travel_time
 
         return path, node_arrival_times
 
@@ -141,7 +148,8 @@ class ACO:
                            path: List[int],
                            distances: np.ndarray,
                            arrival_times: Dict[int, float],
-                           time_windows: Optional[Dict[int, TimeWindow]] = None) -> float:
+                           time_windows: Optional[Dict[int, TimeWindow]] = None,
+                           local2global: Optional[List[int]] = None) -> float:
         """Calculate total cost including distance and time window penalties."""
         # Base distance cost
         distance_cost = sum(distances[path[i]][path[i+1]] 
@@ -152,10 +160,11 @@ class ACO:
             return distance_cost
 
         time_penalties = 0
-        for node, arrival_time in arrival_times.items():
-            if node in time_windows:
+        for local_node, arrival_time in arrival_times.items():
+            global_node = local2global[local_node] if local2global else local_node
+            if global_node in time_windows:
                 penalty = self.calculate_time_window_penalty(
-                    arrival_time, time_windows[node])
+                    arrival_time, time_windows[global_node])
                 time_penalties += penalty
 
         return distance_cost + time_penalties
@@ -181,7 +190,8 @@ class ACO:
     def solve(self, 
              points: np.ndarray,
              n_iterations: int = 100,
-             time_windows: Optional[Dict[int, TimeWindow]] = None) -> Tuple[List[int], float, Dict[int, float]]:
+             time_windows: Optional[Dict[int, TimeWindow]] = None,
+             local2global: Optional[List[int]] = None) -> Tuple[List[int], float, Dict[int, float]]:
         """
         Solve TSP using adaptive ACO with time windows
 
@@ -210,9 +220,9 @@ class ACO:
             # Construct solutions
             for _ in range(self.n_ants):
                 path, arrival_times = self.construct_solution(
-                    0, distances, pheromone, time_windows)
+                    0, distances, pheromone, time_windows, local2global)
                 cost = self.calculate_total_cost(
-                    path, distances, arrival_times, time_windows)
+                    path, distances, arrival_times, time_windows, local2global)
 
                 all_paths.append(path)
                 all_costs.append(cost)
