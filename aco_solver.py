@@ -3,6 +3,18 @@ from typing import List, Tuple, Dict, Optional
 import random
 import math
 from utils import TimeWindow
+import time
+from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+@dataclass
+class SolutionMetrics:
+    """Track solution improvement metrics"""
+    iteration: int
+    cost: float
+    violations: int
+    computation_time: float
+    improvement_rate: float
 
 class ACO:
     # Class-level debug flag
@@ -19,7 +31,8 @@ class ACO:
                  speed: float = 1.0,
                  time_penalty_factor: float = 2.0,  # Penalty multiplier for time window violations
                  base_time_penalty: float = 2.0,    # Base penalty for time window violations
-                 lateness_multiplier: float = 1.5): # Multiplier for increasing penalties
+                 lateness_multiplier: float = 1.5,  # Multiplier for increasing penalties
+                 max_parallel_ants: int = 4):       # Maximum number of parallel ant constructions
         self.base_ants = base_ants
         self.base_evaporation = base_evaporation
         self.alpha = alpha
@@ -31,15 +44,16 @@ class ACO:
         self.time_penalty_factor = time_penalty_factor
         self.base_time_penalty = base_time_penalty
         self.lateness_multiplier = lateness_multiplier
+        self.max_parallel_ants = max_parallel_ants
+
+        # Performance tracking
+        self.metrics = []
+        self.last_improvement_iteration = 0
+        self.best_solution_history = []
 
     def calculate_distances(self, points: np.ndarray) -> np.ndarray:
-        """Calculate distance matrix between all points."""
-        n = len(points)
-        distances = np.zeros((n, n))
-        for i in range(n):
-            for j in range(n):
-                distances[i][j] = np.sqrt(np.sum((points[i] - points[j]) ** 2))
-        return distances
+        """Calculate distance matrix between all points using vectorized operations."""
+        return np.sqrt(np.sum((points[:, np.newaxis] - points) ** 2, axis=2))
 
     def initialize_pheromone(self, n_points: int) -> np.ndarray:
         """Initialize pheromone matrix."""
@@ -58,6 +72,92 @@ class ACO:
             return base_penalty * exp_factor
         return 0
 
+    def adapt_parameters(self, 
+                        iteration: int,
+                        current_cost: float,
+                        previous_best: float) -> None:
+        """Adapt ACO parameters based on solution improvement."""
+        if current_cost < previous_best:
+            self.last_improvement_iteration = iteration
+            # Reset parameters on improvement
+            self.n_ants = self.base_ants
+            current_evaporation = self.base_evaporation
+        else:
+            stagnation_time = iteration - self.last_improvement_iteration
+            if stagnation_time >= self.stagnation_limit:
+                # Increase exploration
+                self.n_ants = min(self.n_ants * 2, 200)  # Cap maximum ants
+                current_evaporation = min(
+                    self.base_evaporation + (stagnation_time / 10) * self.evap_increase,
+                    0.9
+                )
+
+    def apply_alns(self,
+                  current_route: List[int],
+                  distances: np.ndarray,
+                  time_windows: Dict[int, TimeWindow],
+                  removal_count: int = 3) -> Tuple[List[int], Dict[int, float]]:
+        """Apply Adaptive Large Neighborhood Search to improve solution."""
+        if len(current_route) <= removal_count + 2:  # +2 for depot visits
+            return current_route, self.calculate_arrival_times(
+                current_route, distances, time_windows)
+
+        # Select random nodes to remove (excluding depot)
+        removable = current_route[1:-1]  # Exclude first and last depot visits
+        if len(removable) <= removal_count:
+            return current_route, self.calculate_arrival_times(
+                current_route, distances, time_windows)
+
+        remove_indices = random.sample(range(len(removable)), removal_count)
+        removed_nodes = [removable[i] for i in remove_indices]
+
+        # Create partial route
+        remaining_route = [n for i, n in enumerate(current_route) 
+                         if n not in removed_nodes]
+
+        # Try different insertion positions
+        best_route = remaining_route
+        best_cost = float('inf')
+        best_arrival_times = None
+
+        for node in removed_nodes:
+            current_best_pos = None
+            current_best_cost = float('inf')
+
+            # Try inserting at each position (excluding depot positions)
+            for pos in range(1, len(remaining_route)):
+                candidate_route = (
+                    remaining_route[:pos] + [node] + remaining_route[pos:]
+                )
+                arrival_times = self.calculate_arrival_times(
+                    candidate_route, distances, time_windows)
+                cost = self.calculate_total_cost(
+                    candidate_route, distances, arrival_times, time_windows)
+
+                if cost < current_best_cost:
+                    current_best_pos = pos
+                    current_best_cost = cost
+
+            if current_best_pos is not None:
+                remaining_route = (
+                    remaining_route[:current_best_pos] + 
+                    [node] + 
+                    remaining_route[current_best_pos:]
+                )
+
+                # Update best solution if improved
+                arrival_times = self.calculate_arrival_times(
+                    remaining_route, distances, time_windows)
+                cost = self.calculate_total_cost(
+                    remaining_route, distances, arrival_times, time_windows)
+
+                if cost < best_cost:
+                    best_route = remaining_route.copy()
+                    best_cost = cost
+                    best_arrival_times = arrival_times
+
+        return best_route, best_arrival_times
+
     def repair_time_windows(self,
                          route: List[int],
                          distances: np.ndarray,
@@ -68,16 +168,11 @@ class ACO:
         if len(route) <= 2:
             return route, {0: 0.0}
 
-        import streamlit as st
-
         best_route = route.copy()
         best_arrival_times = self.calculate_arrival_times(route, distances, time_windows)
         best_violations = self.count_time_violations(best_arrival_times, time_windows)
         initial_cost = self.calculate_total_cost(route, distances, best_arrival_times, time_windows)
         best_cost = initial_cost
-
-        # Log initial state
-        st.write(f"Starting repair: {best_violations} violations, cost: {best_cost:.2f}")
 
         iteration = 0
         while iteration < max_iterations and best_violations > 0:
@@ -98,18 +193,11 @@ class ACO:
                         best_arrival_times = new_arrival_times
                         best_violations = new_violations
                         best_cost = new_cost
-
-                        if self.DEBUG:
-                            st.write(f"Iteration {iteration}: {best_violations} violations, cost: {best_cost:.2f}")
                         break
                 if improvement_found:
                     break
             if not improvement_found:
                 break
-
-        # Log final results
-        improvement_pct = ((initial_cost - best_cost) / initial_cost) * 100
-        st.write(f"Repair complete: {best_violations} violations, cost improved by {improvement_pct:.1f}%")
 
         return best_route, best_arrival_times
 
@@ -160,15 +248,9 @@ class ACO:
         current = 0  # Start at depot
         path = [current]
 
-        import streamlit as st
-
         while unvisited:
             moves = []
             probs = []
-
-            # Log only if in debug mode
-            if self.DEBUG:
-                st.write(f"\nEvaluating moves from node {current}")
 
             for j in unvisited:
                 # Calculate move probability components
@@ -179,8 +261,6 @@ class ACO:
 
                 # Handle non-finite probabilities
                 if not np.isfinite(prob) or np.isnan(prob):
-                    if self.DEBUG:
-                        st.write(f"Non-finite probability for move {current}->{j}, clamping")
                     prob = 1e-6
 
                 moves.append(j)
@@ -189,8 +269,6 @@ class ACO:
             # Normalize probabilities
             total = sum(probs)
             if total == 0 or not np.isfinite(total):
-                if self.DEBUG:
-                    st.write("Using uniform distribution due to invalid probabilities")
                 normalized_probs = [1.0 / len(probs)] * len(probs)
             else:
                 normalized_probs = [max(1e-6, p/total) for p in probs]
@@ -257,10 +335,12 @@ class ACO:
              points: np.ndarray,
              route_nodes: List[int],
              n_iterations: int = 100,
-             time_windows: Optional[Dict[int, TimeWindow]] = None) -> Tuple[List[int], float, Dict[int, float]]:
+             time_windows: Optional[Dict[int, TimeWindow]] = None,
+             alns_frequency: int = 10) -> Tuple[List[int], float, Dict[int, float]]:
         """
         Solve TSP using adaptive ACO with time windows and repair step
         """
+        start_time = time.time()
         distances = self.calculate_distances(points)
         n_points = len(points)
         self.n_ants = int(math.log2(n_points) * self.base_ants)
@@ -269,30 +349,51 @@ class ACO:
         best_path = None
         best_cost = float('inf')
         best_arrival_times = {}
+        previous_best_cost = float('inf')
 
         # For logging improvements
         initial_best_cost = float('inf')
         initial_violations = 0
 
         for iteration in range(n_iterations):
-            all_paths = []
-            all_costs = []
-            all_arrival_times = []
+            iteration_start = time.time()
 
-            # Construct solutions
-            for _ in range(self.n_ants):
-                path = self.construct_solution(route_nodes, distances, pheromone)
-                arrival_times = self.calculate_arrival_times(path, distances, time_windows)
-                cost = self.calculate_total_cost(path, distances, arrival_times, time_windows)
+            # Parallel ant solution construction
+            with ThreadPoolExecutor(max_workers=self.max_parallel_ants) as executor:
+                future_to_ant = {
+                    executor.submit(
+                        self.construct_solution, route_nodes, distances, pheromone
+                    ): i for i in range(self.n_ants)
+                }
 
-                # Store first solution metrics
-                if iteration == 0 and not all_paths:
-                    initial_best_cost = cost
-                    initial_violations = self.count_time_violations(arrival_times, time_windows)
+                all_paths = []
+                all_costs = []
+                all_arrival_times = []
 
-                all_paths.append(path)
-                all_costs.append(cost)
-                all_arrival_times.append(arrival_times)
+                for future in as_completed(future_to_ant):
+                    try:
+                        path = future.result()
+                        arrival_times = self.calculate_arrival_times(
+                            path, distances, time_windows)
+                        cost = self.calculate_total_cost(
+                            path, distances, arrival_times, time_windows)
+
+                        all_paths.append(path)
+                        all_costs.append(cost)
+                        all_arrival_times.append(arrival_times)
+
+                    except Exception as e:
+                        if self.DEBUG:
+                            import streamlit as st
+                            st.write(f"Error in ant construction: {str(e)}")
+                        continue
+
+            # Store first solution metrics
+            if iteration == 0 and all_paths:
+                initial_best_cost = min(all_costs)
+                initial_violations = self.count_time_violations(
+                    all_arrival_times[all_costs.index(initial_best_cost)],
+                    time_windows)
 
             # Update best solution
             min_cost_idx = np.argmin(all_costs)
@@ -301,38 +402,54 @@ class ACO:
                 best_cost = all_costs[min_cost_idx]
                 best_arrival_times = all_arrival_times[min_cost_idx]
 
-        # Apply repair step to best solution
-        if time_windows:
-            original_violations = self.count_time_violations(best_arrival_times, time_windows)
-            original_cost = best_cost
+            # Apply ALNS periodically
+            if iteration % alns_frequency == 0 and best_path is not None:
+                improved_path, improved_times = self.apply_alns(
+                    best_path, distances, time_windows)
+                improved_cost = self.calculate_total_cost(
+                    improved_path, distances, improved_times, time_windows)
 
-            repaired_path, repaired_times = self.repair_time_windows(
-                best_path, distances, time_windows)
-            repaired_cost = self.calculate_total_cost(
-                repaired_path, distances, repaired_times, time_windows)
-            repaired_violations = self.count_time_violations(repaired_times, time_windows)
+                if improved_cost < best_cost:
+                    best_path = improved_path
+                    best_cost = improved_cost
+                    best_arrival_times = improved_times
 
-            # Update if repair improved solution
-            if repaired_violations < original_violations:
-                best_path = repaired_path
-                best_arrival_times = repaired_times
-                best_cost = repaired_cost
+            # Adapt parameters
+            self.adapt_parameters(iteration, best_cost, previous_best_cost)
+            previous_best_cost = best_cost
 
-            # Log improvements
-            import streamlit as st
-            st.write("\n=== Time Window Optimization Results ===")
-            st.write(f"Initial cost: {initial_best_cost:.2f}")
-            st.write(f"Initial violations: {initial_violations}")
-            st.write(f"Pre-repair cost: {original_cost:.2f}")
-            st.write(f"Pre-repair violations: {original_violations}")
-            st.write(f"Final cost: {best_cost:.2f}")
-            st.write(f"Final violations: {repaired_violations}")
+            # Record metrics
+            iteration_time = time.time() - iteration_start
+            improvement_rate = (
+                (previous_best_cost - best_cost) / previous_best_cost 
+                if previous_best_cost != float('inf') else 0
+            )
 
-            if repaired_violations < original_violations:
-                st.success(f"Repair step reduced violations by {original_violations - repaired_violations}")
-            elif repaired_violations == original_violations:
-                st.info("Repair step maintained same number of violations")
-            else:
-                st.warning("Repair step did not improve violations")
+            self.metrics.append(SolutionMetrics(
+                iteration=iteration,
+                cost=best_cost,
+                violations=self.count_time_violations(
+                    best_arrival_times, time_windows),
+                computation_time=iteration_time,
+                improvement_rate=improvement_rate
+            ))
+
+            # Log progress if significant improvement
+            if improvement_rate > 0.01:  # 1% improvement threshold
+                import streamlit as st
+                st.write(f"\nIteration {iteration}:")
+                st.write(f"Cost: {best_cost:.2f}")
+                st.write(f"Improvement: {improvement_rate*100:.1f}%")
+                st.write(f"Time: {iteration_time:.2f}s")
+
+        # Print final optimization results
+        import streamlit as st
+        st.write("\n=== Final Optimization Results ===")
+        st.write(f"Initial cost: {initial_best_cost:.2f}")
+        st.write(f"Initial violations: {initial_violations}")
+        st.write(f"Final cost: {best_cost:.2f}")
+        st.write(f"Final violations: {self.count_time_violations(best_arrival_times, time_windows)}")
+        st.write(f"Total computation time: {time.time() - start_time:.2f}s")
+        st.write(f"Average iteration time: {np.mean([m.computation_time for m in self.metrics]):.2f}s")
 
         return best_path, best_cost, best_arrival_times

@@ -49,20 +49,21 @@ def main():
     vehicle_speed = st.sidebar.slider("Vehicle Speed", 0.1, 5.0, 1.0,
         help="Travel speed (distance/time unit)")
 
-    # ACO Parameters
-    st.sidebar.subheader("ACO Parameters")
-    #Time penalty factor moved to repair parameters section below
-    #time_penalty_factor = st.sidebar.slider("Time Window Penalty Factor", 1.0, 5.0, 2.0,
-    #    help="Penalty multiplier for time window violations")
-
     # Add new parameters to sidebar
-    st.sidebar.subheader("Time Window Repair Parameters")
+    st.sidebar.subheader("Optimization Parameters")
     repair_iterations = st.sidebar.slider("Max Repair Iterations", 10, 200, 50,
         help="Maximum number of iterations for time window repair")
     time_penalty_factor = st.sidebar.slider("Time Window Penalty Factor", 1.0, 10.0, 2.0,
         help="Penalty multiplier for time window violations")
     repair_threshold = st.sidebar.slider("Repair Cost Threshold", 0.1, 2.0, 0.5,
         help="Maximum allowed cost increase during repair (multiplier)")
+
+    # Advanced ACO Parameters
+    st.sidebar.subheader("Advanced ACO Parameters")
+    parallel_ants = st.sidebar.slider("Parallel Ant Processes", 1, 8, 4,
+        help="Number of parallel ant construction processes")
+    alns_frequency = st.sidebar.slider("ALNS Frequency", 5, 20, 10,
+        help="Apply ALNS every N iterations")
 
     if st.button("Generate and Solve VRP"):
         try:
@@ -91,14 +92,15 @@ def main():
                 if route:
                     st.write(f"Max index in route {i}: {max(route)}")
 
-            # Initialize ACO solver
+            # Initialize ACO solver with new parameters
             aco = ACO(base_evaporation=0.15,
                      alpha=1.5,
                      beta=2.5,
                      evap_increase=0.05,
                      stagnation_limit=5,
                      speed=vehicle_speed,
-                     time_penalty_factor=time_penalty_factor)
+                     time_penalty_factor=time_penalty_factor,
+                     max_parallel_ants=parallel_ants)
 
             # Solve for each cluster
             all_routes = []
@@ -126,7 +128,8 @@ def main():
                         global_points,  # Always use global points array
                         route_nodes,
                         n_iterations=100,
-                        time_windows=time_windows
+                        time_windows=time_windows,
+                        alns_frequency=alns_frequency
                     )
 
                     all_routes.append(route)
