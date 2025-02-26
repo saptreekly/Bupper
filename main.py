@@ -17,6 +17,7 @@ def main():
     2. Adaptive Ant Colony Optimization (ACO) with:
        - Dynamic ant count based on problem size
        - Adaptive evaporation rate
+       - Penalty-based time window handling
     3. 3-opt Local Search Improvement
     4. Capacity constraints for each vehicle
     5. Time window constraints for each location
@@ -50,17 +51,12 @@ def main():
 
     # ACO Parameters
     st.sidebar.subheader("ACO Parameters")
-    base_ants = st.sidebar.slider("Base Number of Ants", 5, 50, 20,
-        help="Base value for calculating number of ants (adjusted by problem size)")
-    n_iterations = st.sidebar.slider("Number of Iterations", 10, 200, 100)
-    base_evaporation = st.sidebar.slider("Base Evaporation Rate", 0.01, 0.5, 0.1)
+    time_penalty_factor = st.sidebar.slider("Time Window Penalty Factor", 1.0, 5.0, 2.0,
+        help="Penalty multiplier for time window violations")
 
     # Advanced Parameters
     st.sidebar.subheader("Advanced Parameters")
     with st.sidebar.expander("Advanced Settings"):
-        alpha = st.slider("Alpha (Pheromone Importance)", 0.1, 5.0, 1.0)
-        evap_increase = st.slider("Evaporation Rate Increase", 0.01, 0.2, 0.05)
-        stagnation_limit = st.slider("Stagnation Limit", 2, 10, 5)
         enable_cross_route = st.checkbox("Enable Cross-Route Optimization", True,
             help="Try to improve solution by moving nodes between routes")
         if enable_cross_route:
@@ -83,22 +79,25 @@ def main():
                 clustered_points, labels = cluster_points(points, n_vehicles)
 
             # Initialize ACO solver
-            aco = ACO(base_ants=base_ants,
-                     base_evaporation=base_evaporation,
-                     alpha=alpha,
-                     evap_increase=evap_increase,
-                     stagnation_limit=stagnation_limit,
-                     speed=vehicle_speed)
+            aco = ACO(base_evaporation=0.15,  # Increased from 0.1
+                     alpha=1.5,  # Increased from 1.0
+                     beta=2.5,  # Increased from 2.0
+                     evap_increase=0.05,
+                     stagnation_limit=5,
+                     speed=vehicle_speed,
+                     time_penalty_factor=time_penalty_factor)
 
             # Solve for each cluster
             all_routes = []
             all_lengths = []
+            all_arrival_times = []
 
             with st.spinner("Solving routes for each vehicle..."):
                 for i, cluster_points_array in enumerate(clustered_points):
                     if len(cluster_points_array) < 2:
                         all_routes.append([])
                         all_lengths.append(0)
+                        all_arrival_times.append({})
                         continue
 
                     # Get indices of points in this cluster
@@ -120,57 +119,33 @@ def main():
                     }
 
                     # Solve TSP for this cluster
-                    route, length = aco.solve(cluster_points_array, n_iterations,
-                                           cluster_time_windows)
+                    route, cost, arrival_times = aco.solve(
+                        cluster_points_array, 
+                        n_iterations=100,
+                        time_windows=cluster_time_windows
+                    )
 
                     # Convert route indices back to original point indices
                     original_route = [cluster_indices[idx] for idx in route]
+                    original_arrival_times = {
+                        cluster_indices[node]: time 
+                        for node, time in arrival_times.items()
+                    }
 
-                    # Apply 3-opt improvement
-                    distances = aco.calculate_distances(points[cluster_indices])
-                    improved_route, improved_length = three_opt_improvement(
-                        route, distances, cluster_time_windows, vehicle_speed)
-
-                    # Convert improved route to original indices
-                    improved_original_route = [cluster_indices[idx] for idx in improved_route]
-
-                    all_routes.append(improved_original_route)
-                    all_lengths.append(improved_length)
-
-            # Apply cross-route optimization if enabled
-            if enable_cross_route:
-                with st.spinner("Performing cross-route optimization..."):
-                    # Prepare demands (simple model: each point has demand of 1)
-                    demands = [1] * len(points)
-
-                    improved_routes, total_distance = optimize_cross_route(
-                        all_routes,
-                        aco.calculate_distances(points),
-                        demands,
-                        vehicle_capacity,
-                        time_windows,
-                        vehicle_speed,
-                        max_cross_iterations
-                    )
-
-                    # Update routes if improvement found
-                    if total_distance < sum(all_lengths):
-                        all_routes = improved_routes
-                        all_lengths = [sum(aco.calculate_distances(points)[route[i]][route[i+1]]
-                                         for i in range(len(route)-1))
-                                     for route in improved_routes]
-                        st.success("Cross-route optimization improved the solution!")
+                    all_routes.append(original_route)
+                    all_lengths.append(cost)
+                    all_arrival_times.append(original_arrival_times)
 
             # Display results
             st.subheader("Results")
 
             # Summary metrics
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric("Total Routes", len([r for r in all_routes if r]))
                 for i, length in enumerate(all_lengths):
                     if length > 0:
-                        st.metric(f"Route {i+1} Length", round(length, 2))
+                        st.metric(f"Route {i+1} Cost", round(length, 2))
 
             with col2:
                 st.metric("Total Points", len(points))
@@ -179,27 +154,45 @@ def main():
                         st.metric(f"Route {i+1} Points", len(route))
 
             with col3:
+                st.metric("Total Cost", round(sum(all_lengths), 2))
                 st.metric("Speed", vehicle_speed)
-                if time_windows:
-                    st.metric("Time Windows", len(time_windows))
-
-            with col4:
-                st.metric("Total Distance", round(sum(all_lengths), 2))
-                if enable_cross_route:
-                    st.metric("Cross-Route Iterations", max_cross_iterations)
 
             # Visualization
             st.subheader("Route Visualization")
             plot_routes(points, all_routes, labels,
                      "Vehicle Routes (K-means + ACO + 3-opt)")
 
-            # Time window details
+            # Time window analysis
             if time_windows:
-                st.subheader("Time Window Details")
-                st.write("Time windows for each node:")
-                for node, tw in time_windows.items():
-                    st.write(f"Node {node}: [{round(tw.earliest, 1)}, {round(tw.latest, 1)}] "
-                            f"(Service time: {round(tw.service_time, 1)})")
+                st.subheader("Time Window Analysis")
+                for route_idx, (route, arrival_times) in enumerate(zip(all_routes, all_arrival_times)):
+                    if not route:
+                        continue
+
+                    st.write(f"Route {route_idx + 1} Schedule:")
+                    violations = []
+                    for node in route:
+                        arrival = arrival_times.get(node, 0)
+                        if node in time_windows:
+                            tw = time_windows[node]
+                            status = "✅ On time"
+                            if arrival < tw.earliest:
+                                status = "⏳ Early (waiting)"
+                            elif arrival > tw.latest:
+                                status = "⚠️ Late"
+                                violations.append((node, arrival - tw.latest))
+
+                            st.write(
+                                f"Node {node}: Arrival={round(arrival, 1)}, "
+                                f"Window=[{round(tw.earliest, 1)}, {round(tw.latest, 1)}] "
+                                f"- {status}"
+                            )
+
+                    if violations:
+                        st.warning(
+                            f"Route {route_idx + 1} has {len(violations)} time window "
+                            f"violations. Total delay: {round(sum(v[1] for v in violations), 1)} units"
+                        )
 
         except Exception as e:
             st.error(f"An unexpected error occurred: {str(e)}")
