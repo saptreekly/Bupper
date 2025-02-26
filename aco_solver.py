@@ -499,6 +499,14 @@ class ACO:
         """
         Solve TSP using adaptive ACO with time windows and repair step
         """
+        import streamlit as st
+
+        # Log initial route nodes
+        st.write("\n=== ACO Solver Starting ===")
+        st.write(f"Initial route nodes: {route_nodes}")
+        delivery_nodes = set(route_nodes[1:])  # Exclude depot
+        st.write(f"Number of delivery points: {len(delivery_nodes)}")
+
         start_time = time.time()
         distances = self.calculate_distances(points)
         n_points = len(points)
@@ -512,9 +520,14 @@ class ACO:
         best_arrival_times = {}
         previous_best_cost = float('inf')
 
-        # For logging improvements
-        initial_best_cost = float('inf')
-        initial_violations = 0
+        # Track node inclusion
+        node_inclusion_count = {node: 0 for node in delivery_nodes}
+        skipped_nodes = set()
+        constraint_violations = {
+            'capacity': set(),
+            'time_window': set(),
+            'other': set()
+        }
 
         for iteration in range(n_iterations):
             iteration_start = time.time()
@@ -537,6 +550,23 @@ class ACO:
                         arrival_times = self.calculate_arrival_times(path, distances, time_windows)
                         cost = self.calculate_total_cost(path, distances, arrival_times, time_windows)
 
+                        # Track node inclusion
+                        included_nodes = set(path[1:-1])  # Exclude depot
+                        for node in included_nodes:
+                            node_inclusion_count[node] = node_inclusion_count.get(node, 0) + 1
+
+                        # Track constraint violations
+                        if time_windows:
+                            for node, arrival in arrival_times.items():
+                                if node in time_windows:
+                                    tw = time_windows[node]
+                                    if arrival > tw.latest:
+                                        constraint_violations['time_window'].add(node)
+
+                        route_demand = sum(demands[i] for i in path[1:-1])
+                        if route_demand > capacity:
+                            constraint_violations['capacity'].update(path[1:-1])
+
                         all_paths.append(path)
                         all_costs.append(cost)
                         all_arrival_times.append(arrival_times)
@@ -544,13 +574,6 @@ class ACO:
                     except Exception as e:
                         self.log(f"Error in ant construction: {str(e)}")
                         continue
-
-            # Store first solution metrics
-            if iteration == 0 and all_paths:
-                initial_best_cost = min(all_costs)
-                initial_violations = self.count_time_violations(
-                    all_arrival_times[all_costs.index(initial_best_cost)],
-                    time_windows)
 
             # Update best solution
             min_cost_idx = np.argmin(all_costs)
@@ -570,6 +593,17 @@ class ACO:
                 improved_path, improved_times = self.apply_alns(best_path, distances, time_windows)
                 improved_cost = self.calculate_total_cost(improved_path, distances, improved_times, time_windows)
 
+                # Track nodes affected by ALNS
+                before_nodes = set(best_path[1:-1])
+                after_nodes = set(improved_path[1:-1])
+                if before_nodes != after_nodes:
+                    added = after_nodes - before_nodes
+                    removed = before_nodes - after_nodes
+                    if added:
+                        st.write(f"ALNS added nodes: {added}")
+                    if removed:
+                        st.write(f"ALNS removed nodes: {removed}")
+
                 if improved_cost < best_cost:
                     best_path = improved_path
                     best_cost = improved_cost
@@ -580,36 +614,41 @@ class ACO:
             # Update pheromone
             pheromone = self.update_pheromone(pheromone, all_paths, all_costs, self.base_evaporation)
 
-            # Record metrics
-            iteration_time = time.time() - iteration_start
-            improvement_rate = (
-                (previous_best_cost - best_cost) / previous_best_cost 
-                if previous_best_cost != float('inf') else 0
-            )
+        # Analyze node inclusion
+        st.write("\n=== Node Inclusion Analysis ===")
+        never_included = {node for node, count in node_inclusion_count.items() if count == 0}
+        rarely_included = {node for node, count in node_inclusion_count.items() 
+                         if 0 < count < n_iterations * self.n_ants * 0.1}  # Less than 10% inclusion
 
-            self.metrics.append(SolutionMetrics(
-                iteration=iteration,
-                cost=best_cost,
-                violations=self.count_time_violations(
-                    best_arrival_times, time_windows),
-                computation_time=iteration_time,
-                improvement_rate=improvement_rate
-            ))
+        if never_included:
+            st.write(f"\nNodes never included in any solution: {never_included}")
+        if rarely_included:
+            st.write(f"\nNodes rarely included (<10% of solutions): {rarely_included}")
 
-        # Verify all nodes are included
+        if constraint_violations['time_window']:
+            st.write(f"\nNodes with time window violations: {constraint_violations['time_window']}")
+        if constraint_violations['capacity']:
+            st.write(f"\nNodes contributing to capacity violations: {constraint_violations['capacity']}")
+
+        # Verify all nodes are included in final solution
         if best_path:
-            best_path = verify_and_fix_routes(
-                [best_path], len(points), distances, 
-                self.demands, self.capacity, time_windows, self.speed)[0]
-            # Recalculate metrics after fixes
-            best_arrival_times = self.calculate_arrival_times(best_path, distances, time_windows)
-            best_cost = self.calculate_total_cost(best_path, distances, best_arrival_times, time_windows)
+            st.write("\n=== Final Solution Analysis ===")
+            final_nodes = set(best_path[1:-1])
+            missing_nodes = delivery_nodes - final_nodes
+            if missing_nodes:
+                st.write(f"Missing nodes in final solution: {missing_nodes}")
+                best_path = verify_and_fix_routes(
+                    [best_path], len(points), distances, 
+                    self.demands, self.capacity, time_windows, self.speed)[0]
+                # Recalculate metrics after fixes
+                best_arrival_times = self.calculate_arrival_times(best_path, distances, time_windows)
+                best_cost = self.calculate_total_cost(best_path, distances, best_arrival_times, time_windows)
+                st.write("Applied fixes to include missing nodes")
 
         # Print final summary
         total_time = time.time() - start_time
         final_violations = self.count_time_violations(best_arrival_times, time_windows)
 
-        import streamlit as st
         st.write("\n=== Optimization Summary ===")
         st.write(f"Initial cost: {initial_best_cost:.2f}")
         st.write(f"Final cost: {best_cost:.2f}")
