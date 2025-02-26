@@ -311,13 +311,13 @@ class ACO:
         # Track successful reinsertions
         reinserted_nodes = set()
 
-        # Reinsert nodes one by one
+        # Try inserting each node at its best position
         for node in removal_candidates:
             current_best_pos = None
             current_best_cost = float('inf')
             current_best_times = None
 
-            # Try each insertion position (excluding depot positions)
+            # Try each insertion position
             for pos in range(1, len(remaining_route)):
                 candidate_route = (
                     remaining_route[:pos] + [node] + remaining_route[pos:]
@@ -346,31 +346,32 @@ class ACO:
                     best_cost = current_best_cost
                     best_arrival_times = current_best_times
 
-        # Verify all nodes were reinserted
+        # Handle any remaining uninserted nodes with fallback strategy
         missing_nodes = set(removal_candidates) - reinserted_nodes
         if missing_nodes:
-            # Force reinsertion of any missing nodes at best possible position
+            # Try greedy reinsertion for each missing node
             for node in missing_nodes:
                 min_increase = float('inf')
                 best_pos = 1  # Default to first position after depot
+                best_route_copy = best_route.copy()
 
+                # First attempt: Try all positions in current route
                 for pos in range(1, len(best_route)):
                     temp_route = best_route[:pos] + [node] + best_route[pos:]
-                    temp_cost = self.calculate_total_cost(
-                        temp_route,
-                        distances,
-                        self.calculate_arrival_times(temp_route, distances, time_windows),
-                        time_windows
-                    )
+                    temp_arrival_times = self.calculate_arrival_times(temp_route, distances, time_windows)
+                    temp_cost = self.calculate_total_cost(temp_route, distances, temp_arrival_times, time_windows)
+
                     increase = temp_cost - best_cost
                     if increase < min_increase:
                         min_increase = increase
                         best_pos = pos
+                        best_route_copy = temp_route
+                        best_arrival_times = temp_arrival_times
 
-                # Force insert at best found position
-                best_route = best_route[:best_pos] + [node] + best_route[best_pos:]
-                best_arrival_times = self.calculate_arrival_times(best_route, distances, time_windows)
+                # Update route with best found position
+                best_route = best_route_copy
                 best_cost = self.calculate_total_cost(best_route, distances, best_arrival_times, time_windows)
+                reinserted_nodes.add(node)
 
         # Calculate final metrics
         final_violations = len([n for n in best_route[1:-1] 
@@ -383,10 +384,14 @@ class ACO:
             'cost_change_pct': ((best_cost - current_cost) / current_cost) * 100
         })
 
-        # Log summary metrics only
+        # Log summary metrics only if improvement found
         if metrics['cost_change_pct'] < 0:  # Only log improvements
             st.write(f"ALNS improved solution by {abs(metrics['cost_change_pct']):.1f}%")
             st.write(f"Violations reduced from {metrics['violations_before']} to {metrics['violations_after']}")
+
+        # Verify node preservation
+        if len(reinserted_nodes) != len(removal_candidates):
+            st.error(f"Warning: {len(removal_candidates) - len(reinserted_nodes)} nodes could not be reinserted")
 
         return best_route, best_arrival_times
 
