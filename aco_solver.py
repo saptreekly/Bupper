@@ -253,35 +253,74 @@ class ACO:
                   current_route: List[int],
                   distances: np.ndarray,
                   time_windows: Dict[int, TimeWindow],
-                  removal_count: int = 3) -> Tuple[List[int], Dict[int, float]]:
+                  removal_ratio: float = 0.2,  # Maximum fraction of nodes to remove
+                  violation_threshold: float = 1.0  # Minimum violation cost to consider removal
+                  ) -> Tuple[List[int], Dict[int, float]]:
         """Apply Adaptive Large Neighborhood Search to improve solution."""
-        if len(current_route) <= removal_count + 2:  # +2 for depot visits
+        import streamlit as st
+
+        if len(current_route) <= 3:  # Route too small for ALNS
             return current_route, self.calculate_arrival_times(
                 current_route, distances, time_windows)
 
-        # Select random nodes to remove (excluding depot)
-        removable = current_route[1:-1]  # Exclude first and last depot visits
-        if len(removable) <= removal_count:
-            return current_route, self.calculate_arrival_times(
-                current_route, distances, time_windows)
+        st.write("\n=== ALNS Analysis ===")
+        st.write(f"Initial route: {current_route}")
 
-        remove_indices = random.sample(range(len(removable)), removal_count)
-        removed_nodes = [removable[i] for i in remove_indices]
+        # Calculate current costs and violations
+        current_arrival_times = self.calculate_arrival_times(current_route, distances, time_windows)
+        current_cost = self.calculate_total_cost(current_route, distances, current_arrival_times, time_windows)
 
-        # Create partial route
-        remaining_route = [n for i, n in enumerate(current_route) 
-                         if n not in removed_nodes]
+        # Identify problematic nodes (excluding depot)
+        node_violations = {}
+        removable = current_route[1:-1]  # Exclude depot at start/end
+        for node in removable:
+            if node in time_windows:
+                arrival = current_arrival_times.get(node, 0)
+                tw = time_windows[node]
+                if arrival > tw.latest:
+                    violation = arrival - tw.latest
+                    node_violations[node] = violation
+
+        # Sort nodes by violation severity
+        violation_nodes = sorted(
+            [(node, violation) for node, violation in node_violations.items()],
+            key=lambda x: x[1],
+            reverse=True
+        )
+
+        if violation_nodes:
+            st.write(f"Found {len(violation_nodes)} nodes with violations:")
+            for node, violation in violation_nodes[:3]:  # Show top 3 violations
+                st.write(f"Node {node}: violation = {violation:.2f}")
+
+        # Calculate maximum nodes to remove
+        max_removals = max(1, int(len(removable) * removal_ratio))
+        removal_candidates = [
+            node for node, violation in violation_nodes
+            if violation >= violation_threshold
+        ][:max_removals]
+
+        if not removal_candidates:
+            st.write("No suitable nodes for removal")
+            return current_route, current_arrival_times
+
+        st.write(f"Selected {len(removal_candidates)} nodes for removal: {removal_candidates}")
+
+        # Create partial route by removing selected nodes
+        remaining_route = [n for n in current_route if n not in removal_candidates]
 
         # Try different insertion positions
         best_route = remaining_route
         best_cost = float('inf')
         best_arrival_times = None
 
-        for node in removed_nodes:
+        # Reinsert nodes one by one
+        for node in removal_candidates:
             current_best_pos = None
             current_best_cost = float('inf')
+            current_best_times = None
 
-            # Try inserting at each position (excluding depot positions)
+            # Try each insertion position (excluding depot positions)
             for pos in range(1, len(remaining_route)):
                 candidate_route = (
                     remaining_route[:pos] + [node] + remaining_route[pos:]
@@ -292,8 +331,9 @@ class ACO:
                     candidate_route, distances, arrival_times, time_windows)
 
                 if cost < current_best_cost:
-                    current_best_pos = pos
                     current_best_cost = cost
+                    current_best_pos = pos
+                    current_best_times = arrival_times
 
             if current_best_pos is not None:
                 remaining_route = (
@@ -303,17 +343,20 @@ class ACO:
                 )
 
                 # Update best solution if improved
-                arrival_times = self.calculate_arrival_times(
-                    remaining_route, distances, time_windows)
-                cost = self.calculate_total_cost(
-                    remaining_route, distances, arrival_times, time_windows)
-
-                if cost < best_cost:
+                if current_best_cost < best_cost:
                     best_route = remaining_route.copy()
-                    best_cost = cost
-                    best_arrival_times = arrival_times
+                    best_cost = current_best_cost
+                    best_arrival_times = current_best_times
 
-        return best_route, best_arrival_times
+        # Compare final solution with initial
+        if best_cost < current_cost:
+            improvement = ((current_cost - best_cost) / current_cost) * 100
+            st.write(f"ALNS improved solution by {improvement:.1f}%")
+            st.write(f"New route: {best_route}")
+            return best_route, best_arrival_times
+        else:
+            st.write("ALNS did not find improvement")
+            return current_route, current_arrival_times
 
     def repair_time_windows(self,
                          route: List[int],
