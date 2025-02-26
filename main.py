@@ -138,6 +138,8 @@ def main():
                     route, cost, arrival_times = aco.solve(
                         global_points,  # Always use global points array
                         route_nodes,
+                        demands,
+                        vehicle_capacity,
                         n_iterations=100,
                         time_windows=time_windows,
                         alns_frequency=alns_frequency
