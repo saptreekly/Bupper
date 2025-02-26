@@ -17,6 +17,18 @@ def plot_routes(points: np.ndarray,
         labels: Cluster assignment for each point
         title: Plot title
     """
+    # Debug logging
+    st.write("Debug Information:")
+    st.write(f"Points array shape: {points.shape}")
+    for i, route in enumerate(routes):
+        st.write(f"Route {i} indices: {route}")
+        st.write(f"Route {i} max index: {max(route) if route else -1}")
+        if route and max(route) >= len(points):
+            raise ValueError(
+                f"Route {i} contains index {max(route)} which is >= points array "
+                f"length {len(points)}"
+            )
+
     # Verify route indices are within bounds
     n_points = len(points)
     for route in routes:

@@ -65,9 +65,15 @@ def main():
                 max_window=max_window
             )
 
+            st.write("Debug: Generated points array shape:", points.shape)
+
             # Cluster points
             with st.spinner("Clustering points..."):
                 route_indices, labels = cluster_points(points, n_vehicles)
+
+            st.write("Debug: Initial route indices:")
+            for i, route in enumerate(route_indices):
+                st.write(f"Route {i}: {route}")
 
             # Initialize ACO solver
             aco = ACO(base_evaporation=0.15,  # Increased from 0.1
@@ -110,6 +116,10 @@ def main():
                     all_routes.append(route)
                     all_lengths.append(cost)
                     all_arrival_times.append(arrival_times)
+
+                st.write("Debug: Final routes before visualization:")
+                for i, route in enumerate(all_routes):
+                    st.write(f"Route {i}: {route}")
 
             # Display results
             st.subheader("Results")
