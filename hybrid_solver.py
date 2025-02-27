@@ -128,7 +128,8 @@ class HybridSolver:
                     demands,
                     capacity,
                     n_iterations=100,
-                    time_windows=self.time_windows
+                    time_windows=self.time_windows,
+                    conductivities=conductivities  # Pass conductivities to ACO
                 )
 
                 # Update best solution

@@ -168,8 +168,7 @@ class SolutionMetrics:
     improvement_rate: float
 
 class ACO:
-    # Class-level debug flag
-    VERBOSE = False  # Set to True for detailed logging
+    """Ant Colony Optimization with soft constraints and dynamic pheromone initialization"""
 
     def __init__(self, 
                  base_ants: int = 40,
@@ -180,11 +179,12 @@ class ACO:
                  evap_increase: float = 0.05,
                  stagnation_limit: int = 5,
                  speed: float = 1.0,
-                 time_penalty_factor: float = 2.0,  # Penalty multiplier for time window violations
-                 base_time_penalty: float = 2.0,    # Base penalty for time window violations
-                 lateness_multiplier: float = 1.5,  # Multiplier for increasing penalties
-                 max_parallel_ants: int = 8,        # Increased from 4
-                 verbose: bool = False):            # Control logging verbosity
+                 time_penalty_factor: float = 2.0,
+                 base_time_penalty: float = 2.0,
+                 lateness_multiplier: float = 1.5,
+                 max_parallel_ants: int = 8,
+                 verbose: bool = False):
+        # Keep existing initialization parameters
         self.base_ants = base_ants
         self.base_evaporation = base_evaporation
         self.alpha = alpha
@@ -216,9 +216,20 @@ class ACO:
         diff = points[:, np.newaxis, :] - points[np.newaxis, :, :]
         return np.sqrt(np.sum(diff * diff, axis=-1))
 
-    def initialize_pheromone(self, n_points: int) -> np.ndarray:
-        """Initialize pheromone matrix."""
-        return np.ones((n_points, n_points)) * self.q0
+    def initialize_pheromone(self, n_points: int, conductivities: Optional[Dict] = None) -> np.ndarray:
+        """Initialize pheromone matrix using Physarum conductivities if available"""
+        pheromone = np.ones((n_points, n_points)) * self.q0
+
+        if conductivities:
+            # Scale conductivities to pheromone values
+            max_cond = max(conductivities.values())
+            for (i, j), cond in conductivities.items():
+                # Higher conductivity = higher initial pheromone
+                scaled_pheromone = (cond / max_cond) * (1.0 - self.q0) + self.q0
+                pheromone[i, j] = scaled_pheromone
+                pheromone[j, i] = scaled_pheromone
+
+        return pheromone
 
     def calculate_time_window_penalty(self,
                                    arrival_time: float,
@@ -548,30 +559,32 @@ class ACO:
 
         return pheromone
 
-    def solve(self, 
+    def solve(self,
              points: np.ndarray,
              route_nodes: List[int],
              demands: List[float],
              capacity: float,
              n_iterations: int = 100,
              time_windows: Optional[Dict[int, TimeWindow]] = None,
-             alns_frequency: int = 10) -> Tuple[List[int], float, Dict[int, float]]:
+             conductivities: Optional[Dict] = None) -> Tuple[List[int], float, Dict[int, float]]:
         """
-        Solve TSP using adaptive ACO with time windows and repair step
+        Solve TSP/VRP with soft constraints and Physarum integration
         """
         import streamlit as st
 
-        # Log initial route nodes
         st.write("\n=== ACO Solver Starting ===")
         st.write(f"Initial route nodes: {route_nodes}")
-        delivery_nodes = set(route_nodes[1:])  # Exclude depot
+        delivery_nodes = set(route_nodes[1:])
         st.write(f"Number of delivery points: {len(delivery_nodes)}")
 
         start_time = time.time()
         distances = self.calculate_distances(points)
         n_points = len(points)
         self.n_ants = int(math.log2(n_points) * self.base_ants)
-        pheromone = self.initialize_pheromone(n_points)
+
+        # Initialize pheromone using conductivities if available
+        pheromone = self.initialize_pheromone(n_points, conductivities)
+
         self.demands = demands
         self.capacity = capacity
 
@@ -579,17 +592,6 @@ class ACO:
         best_cost = float('inf')
         best_arrival_times = {}
         previous_best_cost = float('inf')
-        initial_best_cost = float('inf')
-        initial_violations = 0
-
-        # Track node inclusion
-        node_inclusion_count = {node: 0 for node in delivery_nodes}
-        skipped_nodes = set()
-        constraint_violations = {
-            'capacity': set(),
-            'time_window': set(),
-            'other': set()
-        }
 
         for iteration in range(n_iterations):
             iteration_start = time.time()
@@ -610,131 +612,58 @@ class ACO:
                     try:
                         path = future.result()
                         arrival_times = self.calculate_arrival_times(path, distances, time_windows)
-                        cost = self.calculate_total_cost(path, distances, arrival_times, time_windows)
 
-                        # Track node inclusion
-                        included_nodes = set(path[1:-1])  # Exclude depot
-                        for node in included_nodes:
-                            node_inclusion_count[node] = node_inclusion_count.get(node, 0) + 1
+                        # Calculate total cost with soft constraints
+                        base_cost = sum(distances[path[i]][path[i+1]] for i in range(len(path)-1))
 
-                        # Track constraint violations
+                        # Add soft penalties for constraint violations
+                        penalty = 0.0
+
+                        # Time window penalties
                         if time_windows:
                             for node, arrival in arrival_times.items():
                                 if node in time_windows:
                                     tw = time_windows[node]
                                     if arrival > tw.latest:
-                                        constraint_violations['time_window'].add(node)
+                                        delay = arrival - tw.latest
+                                        penalty += delay * self.time_penalty_factor
 
+                        # Capacity penalties
                         route_demand = sum(demands[i] for i in path[1:-1])
                         if route_demand > capacity:
-                            constraint_violations['capacity'].update(path[1:-1])
+                            excess = route_demand - capacity
+                            penalty += excess * self.base_time_penalty
+
+                        total_cost = base_cost + penalty
 
                         all_paths.append(path)
-                        all_costs.append(cost)
+                        all_costs.append(total_cost)
                         all_arrival_times.append(arrival_times)
 
                     except Exception as e:
-                        self.log(f"Error in ant construction: {str(e)}")
+                        st.write(f"Error in ant construction: {str(e)}")
                         continue
 
-            # Store first solution metrics after parallel construction
-            if iteration == 0 and all_paths:
-                initial_best_cost = min(all_costs)
-                best_arrival_times_idx = all_costs.index(initial_best_cost)
-                initial_violations = self.count_time_violations(
-                    all_arrival_times[best_arrival_times_idx], time_windows)
-                st.write(f"Initial solution - Cost: {initial_best_cost:.2f}, "
-                        f"Violations: {initial_violations}")
+                if all_costs:
+                    min_cost_idx = np.argmin(all_costs)
+                    if all_costs[min_cost_idx] < best_cost:
+                        best_path = all_paths[min_cost_idx]
+                        best_cost = all_costs[min_cost_idx]
+                        best_arrival_times = all_arrival_times[min_cost_idx]
 
-            # Update best solution
-            if not all_costs:  # Handle empty solutions case
-                st.warning(f"No valid solutions found in iteration {iteration}")
-                continue  # Skip to next iteration
+                        improvement = ((previous_best_cost - best_cost) / previous_best_cost 
+                                    if previous_best_cost != float('inf') else 1.0)
+                        if improvement > 0.05:
+                            st.write(f"Cost improved by {improvement*100:.1f}%")
 
-            min_cost_idx = np.argmin(all_costs)
-            if all_costs[min_cost_idx] < best_cost:
-                best_path = all_paths[min_cost_idx]
-                best_cost = all_costs[min_cost_idx]
-                best_arrival_times = all_arrival_times[min_cost_idx]
+                    previous_best_cost = best_cost
 
-                # Log significant improvements (>5%)
-                improvement = (previous_best_cost - best_cost) / previous_best_cost
-                if improvement > 0.05:  # 5% threshold
-                    self.log(f"Cost improved by {improvement*100:.1f}%", force=True)
-
-            # Adapt parameters and apply ALNS
+                    # Update pheromones with stronger reinforcement for better paths
+                    pheromone = self.update_pheromone(
+                        pheromone, all_paths, all_costs, 
+                        self.base_evaporation
+                    )
+                    
             self.adapt_parameters(iteration, best_cost, previous_best_cost, len(points))
-            if iteration % alns_frequency == 0 and best_path is not None:
-                improved_path, improved_times = self.apply_alns(best_path, distances, time_windows)
-                improved_cost = self.calculate_total_cost(improved_path, distances, improved_times, time_windows)
-
-                # Track nodes affected by ALNS
-                before_nodes = set(best_path[1:-1])
-                after_nodes = set(improved_path[1:-1])
-                if before_nodes != after_nodes:
-                    added = after_nodes - before_nodes
-                    removed = before_nodes - after_nodes
-                    if added:
-                        st.write(f"ALNS added nodes: {added}")
-                    if removed:
-                        st.write(f"ALNS removed nodes: {removed}")
-
-                if improved_cost < best_cost:
-                    best_path = improved_path
-                    best_cost = improved_cost
-                    best_arrival_times = improved_times
-
-            previous_best_cost = best_cost
-
-            # Update pheromone
-            pheromone = self.update_pheromone(pheromone, all_paths, all_costs, self.base_evaporation)
-
-        # Analyze node inclusion
-        st.write("\n=== Node Inclusion Analysis ===")
-        never_included = {node for node, count in node_inclusion_count.items() if count == 0}
-        rarely_included = {node for node, count in node_inclusion_count.items() 
-                          if 0 < count < n_iterations * self.n_ants * 0.1}  # Less than 10% inclusion
-
-        if never_included:
-            st.write(f"\nNodes never included in any solution: {never_included}")
-        if rarely_included:
-            st.write(f"\nNodes rarely included (<10% of solutions): {rarely_included}")
-
-        if constraint_violations['time_window']:
-            st.write(f"\nNodes with time window violations: {constraint_violations['time_window']}")
-        if constraint_violations['capacity']:
-            st.write(f"\nNodes contributing to capacity violations: {constraint_violations['capacity']}")
-
-        # Verify all nodes are included in final solution
-        if best_path:
-            st.write("\n=== Final Solution Analysis ===")
-            final_nodes = set(best_path[1:-1])
-            missing_nodes = delivery_nodes - final_nodes
-            if missing_nodes:
-                st.write(f"Missing nodes in final solution: {missing_nodes}")
-                best_path = verify_and_fix_routes(
-                    [best_path], len(points), distances, 
-                    self.demands, self.capacity, time_windows, self.speed)[0]
-                # Recalculate metrics after fixes
-                best_arrival_times = self.calculate_arrival_times(best_path, distances, time_windows)
-                best_cost = self.calculate_total_cost(best_path, distances, best_arrival_times, time_windows)
-                st.write("Applied fixes to include missing nodes")
-
-        # Print final summary
-        total_time = time.time() - start_time
-        final_violations = self.count_time_violations(best_arrival_times, time_windows)
-
-        st.write("\n=== Optimization Summary ===")
-        st.write(f"Initial cost: {initial_best_cost:.2f}")
-        st.write(f"Final cost: {best_cost:.2f}")
-        st.write(f"Initial violations: {initial_violations}")
-        st.write(f"Final violations: {final_violations}")
-        st.write(f"Total computation time: {total_time:.2f}s")
-        st.write(f"Average iteration time: {total_time/n_iterations:.2f}s")
-
-        if final_violations < initial_violations:
-            st.success(f"Reduced violations by {initial_violations - final_violations}")
-        elif final_violations > 0:
-            st.warning(f"Remaining violations: {final_violations}")
 
         return best_path, best_cost, best_arrival_times
