@@ -8,7 +8,7 @@ from utils import TimeWindow
 
 class HybridSolver:
     """Hybrid solver combining Physarum and ACO approaches"""
-    
+
     def __init__(self,
                  points: np.ndarray,
                  time_windows: Optional[Dict[int, TimeWindow]] = None,
@@ -90,27 +90,27 @@ class HybridSolver:
             arrival_times: Arrival times at each node
         """
         st.write("\n=== Starting Hybrid Physarum-ACO Solver ===")
-        
+
         best_route = None
         best_cost = float('inf')
         best_arrival_times = {}
-        
+
         for iteration in range(self.max_hybrid_iterations):
             st.write(f"\nHybrid Iteration {iteration + 1}")
-            
+
             # Run Physarum simulation
             st.write("Running Physarum optimization...")
             conductivities, _ = self.physarum.solve(max_iterations=500)
-            
+
             # Filter network based on conductivities
             filtered_network = self.filter_network(conductivities)
-            
+
             # Extract edge weights for ACO
             distances = np.zeros((self.n_points, self.n_points))
             for i, j, data in filtered_network.edges(data=True):
                 distances[i, j] = data['weight']
                 distances[j, i] = data['weight']
-            
+
             # Run ACO on filtered network
             st.write("Running ACO on filtered network...")
             route, cost, arrival_times = self.aco.solve(
@@ -119,10 +119,9 @@ class HybridSolver:
                 demands,
                 capacity,
                 n_iterations=100,
-                time_windows=self.time_windows,
-                distance_matrix=distances
+                time_windows=self.time_windows
             )
-            
+
             # Update best solution
             if cost < best_cost:
                 improvement = ((best_cost - cost) / best_cost * 100 
@@ -131,17 +130,17 @@ class HybridSolver:
                 best_route = route
                 best_cost = cost
                 best_arrival_times = arrival_times
-                
+
                 # Reinforce ACO solution in Physarum
                 for i in range(len(route) - 1):
                     edge = (route[i], route[i + 1])
                     if edge in conductivities:
                         conductivities[edge] *= 1.5  # Boost conductivity
                         conductivities[(edge[1], edge[0])] = conductivities[edge]
-                
+
                 self.physarum.conductivity = conductivities
             else:
                 st.write("No improvement found in this iteration")
                 break
-        
+
         return best_route, best_cost, best_arrival_times
