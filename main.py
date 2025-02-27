@@ -9,6 +9,8 @@ from clustering import cluster_points, check_capacity_constraints
 from cross_route_optimizer import optimize_cross_route
 from benchmark_utils import BenchmarkManager
 import matplotlib.pyplot as plt
+from hybrid_solver import HybridSolver #Import the hybrid solver
+
 
 def verify_and_fix_routes(routes, num_points, distances, demands, capacity, time_windows, speed, max_repair_iterations=50, cost_increase_threshold=0.2, time_penalty_multiplier=3.0):
     fixed_routes = []
@@ -42,7 +44,7 @@ def main():
     # Add solver selection
     solver_type = st.sidebar.selectbox(
         "Select Solver Type",
-        ["Vehicle Routing (ACO)", "Network Design (Physarum)"]
+        ["Vehicle Routing (ACO)", "Network Design (Physarum)", "Hybrid (Physarum-ACO)"]
     )
 
     if solver_type == "Vehicle Routing (ACO)":
@@ -362,7 +364,7 @@ def main():
                     # Plot results
                     benchmark_manager.plot_results()
 
-    else:  # Physarum solver
+    elif solver_type == "Network Design (Physarum)":
         st.write("""
         ### Physarum-inspired Network Design
         This solver simulates how Physarum polycephalum (slime mold) forms efficient transport networks.
@@ -435,6 +437,102 @@ def main():
                     with col2:
                         improvement = (costs[0] - costs[-1]) / costs[0] * 100
                         st.metric("Cost Reduction", f"{improvement:.1f}%")
+
+            except Exception as e:
+                st.error(f"An error occurred: {str(e)}")
+                st.exception(e)
+
+    elif solver_type == "Hybrid (Physarum-ACO)":
+        st.write("""
+        ### Hybrid Physarum-ACO Solver
+        This solver combines:
+        1. Physarum polycephalum network optimization
+        2. Ant Colony Optimization (ACO)
+        3. Adaptive network filtering
+        4. Iterative refinement
+        """)
+
+        # Hybrid solver parameters
+        st.sidebar.subheader("Hybrid Parameters")
+        max_hybrid_iterations = st.sidebar.slider(
+            "Max Hybrid Iterations", 1, 5, 3,
+            help="Maximum number of Physarum-ACO refinement cycles"
+        )
+        convergence_threshold = st.sidebar.slider(
+            "Convergence Threshold", 1e-5, 1e-3, 1e-4,
+            help="Threshold for solution improvement"
+        )
+
+        if st.button("Run Hybrid Solver"):
+            try:
+                # Generate points and time windows
+                points = generate_random_points(n_points + 1)  # +1 for depot
+                time_windows = generate_random_time_windows(
+                    n_points + 1,
+                    horizon=time_horizon,
+                    min_window=min_window,
+                    max_window=max_window
+                )
+
+                # Initialize hybrid solver
+                solver = HybridSolver(
+                    points=points,
+                    time_windows=time_windows,
+                    speed=vehicle_speed,
+                    convergence_threshold=convergence_threshold,
+                    max_hybrid_iterations=max_hybrid_iterations
+                )
+
+                # Solve using hybrid approach
+                with st.spinner("Running hybrid optimization..."):
+                    route, cost, arrival_times = solver.solve(
+                        demands=[1.0] * len(points),  # Simple demand model
+                        capacity=vehicle_capacity
+                    )
+
+                # Display results
+                st.subheader("Results")
+
+                # Metrics
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Route Cost", f"{cost:.2f}")
+                    st.metric("Route Length", len(route))
+                with col2:
+                    st.metric("Total Points", len(points))
+                    st.metric("Speed", vehicle_speed)
+
+                # Visualization
+                st.subheader("Route Visualization")
+                plot_routes(points, [route], [0] * len(points),
+                            "Hybrid Solver Route")
+
+                # Time window analysis
+                if time_windows:
+                    st.subheader("Time Window Analysis")
+                    violations = []
+                    for node in route:
+                        arrival = arrival_times.get(node, 0)
+                        if node in time_windows:
+                            tw = time_windows[node]
+                            status = "✅ On time"
+                            if arrival < tw.earliest:
+                                status = "⏳ Early (waiting)"
+                            elif arrival > tw.latest:
+                                status = "⚠️ Late"
+                                violations.append((node, arrival - tw.latest))
+
+                            st.write(
+                                f"Node {node}: Arrival={round(arrival, 1)}, "
+                                f"Window=[{round(tw.earliest, 1)}, {round(tw.latest, 1)}] "
+                                f"- {status}"
+                            )
+
+                    if violations:
+                        st.warning(
+                            f"Found {len(violations)} time window violations. "
+                            f"Total delay: {round(sum(v[1] for v in violations), 1)} units"
+                        )
 
             except Exception as e:
                 st.error(f"An error occurred: {str(e)}")
