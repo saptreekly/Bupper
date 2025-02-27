@@ -350,11 +350,23 @@ class PhysarumSolver:
         stagnation_count = 0
         previous_cost = float('inf')
 
-        # Create progress bar
+        # Create UI elements
         progress_bar = st.progress(0)
         status_text = st.empty()
 
+        # Create collapsible logs section
+        logs_expander = st.expander("View Physarum Logs", expanded=False)
+        solver_logs = []
+
+        def log_message(msg: str):
+            solver_logs.append(f"{time.strftime('%H:%M:%S')} - {msg}")
+            with logs_expander:
+                st.text("\n".join(solver_logs))
+
         try:
+            log_message("Starting Physarum optimization")
+            log_message(f"Problem size: {self.n_points} nodes")
+
             for iteration in range(max_iterations):
                 # Update progress every 5 iterations
                 if iteration % 5 == 0:
@@ -362,6 +374,7 @@ class PhysarumSolver:
                     progress_bar.progress(progress)
                     if iteration % 50 == 0:  # Reduce status updates
                         status_text.text(f"Physarum Iteration {iteration}/{max_iterations}")
+                        log_message(f"Completed {iteration} iterations")
 
                 # Compute flows using parallel processing
                 flows = self.compute_flows()
@@ -381,27 +394,47 @@ class PhysarumSolver:
                         best_cost = cost
                         stagnation_count = 0
                         if rel_improvement > 0.01:  # Log only significant improvements
-                            status_text.text(f"Cost improved by {rel_improvement*100:.1f}%")
+                            improvement_msg = f"Cost improved by {rel_improvement*100:.1f}%"
+                            status_text.text(improvement_msg)
+                            log_message(improvement_msg)
                     else:
                         stagnation_count += 1
+                        log_message(f"No improvement (stagnation: {stagnation_count})")
 
                     previous_cost = cost
 
                 # Early stopping checks
                 if max_change < self.params.convergence_threshold:
-                    status_text.text("Converged - optimization complete")
-                    progress_bar.progress(1.0)
+                    msg = f"Converged after {iteration} iterations"
+                    status_text.text(msg)
+                    log_message(msg)
                     break
 
                 if stagnation_count >= self.params.stagnation_limit:
-                    status_text.text("Stopping due to stagnation")
-                    progress_bar.progress(1.0)
+                    msg = f"Stopping due to stagnation after {iteration} iterations"
+                    status_text.text(msg)
+                    log_message(msg)
                     break
+
+            # Log final summary
+            log_message("\n=== Physarum Summary ===")
+            log_message(f"Final cost: {best_cost:.2f}")
+            log_message(f"Total iterations: {iteration + 1}")
+
+            # Add download button for logs
+            log_text = "\n".join(solver_logs)
+            with logs_expander:
+                st.download_button(
+                    "Download Logs",
+                    log_text,
+                    file_name="physarum_logs.txt",
+                    mime="text/plain"
+                )
 
             # Convert final conductivity to dictionary format
             rows, cols = self.conductivity_matrix.nonzero()
             conductivities = {(int(i), int(j)): float(self.conductivity_matrix[i,j])
-                            for i, j in zip(rows, cols)}
+                             for i, j in zip(rows, cols)}
 
             return conductivities, costs
 

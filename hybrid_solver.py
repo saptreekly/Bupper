@@ -2,6 +2,7 @@ import numpy as np
 import networkx as nx
 from typing import List, Tuple, Dict, Optional
 import streamlit as st
+import time
 from physarum_solver import PhysarumSolver, PhysarumParams
 from aco_solver import ACO
 from utils import TimeWindow
@@ -121,16 +122,27 @@ class HybridSolver:
             best_cost: Route cost
             arrival_times: Arrival times at each node
         """
-        # Create progress tracking elements
+        # Create main UI elements
         progress_bar = st.progress(0)
         status_text = st.empty()
 
-        status_text.text("=== Starting Hybrid Physarum-ACO Solver ===")
+        # Create collapsible logs section
+        logs_available = st.empty()  # Placeholder for notification
+        logs_expander = st.expander("View Solver Logs", expanded=False)
 
-        if self.enable_time_windows:
-            status_text.text("Time Windows: Enabled")
-        if self.enable_capacity:
-            status_text.text("Capacity Constraints: Enabled")
+        # Initialize log collection
+        solver_logs = []
+        def log_message(msg: str):
+            solver_logs.append(f"{time.strftime('%H:%M:%S')} - {msg}")
+            with logs_expander:
+                st.text("\n".join(solver_logs))
+            logs_available.info("📝 Solver logs available")
+
+        # Initial status
+        status_text.text("=== Starting Hybrid Physarum-ACO Solver ===")
+        log_message("Solver initialized")
+        log_message(f"Time Windows: {'Enabled' if self.enable_time_windows else 'Disabled'}")
+        log_message(f"Capacity Constraints: {'Enabled' if self.enable_capacity else 'Disabled'}")
 
         best_route = None
         best_cost = float('inf')
@@ -146,6 +158,7 @@ class HybridSolver:
                 progress = (iteration + 1) / self.max_hybrid_iterations
                 progress_bar.progress(progress)
                 status_text.text(f"Hybrid Iteration {iteration + 1}/{self.max_hybrid_iterations}")
+                log_message(f"Starting iteration {iteration + 1}")
 
                 # Run Physarum simulation with early stopping
                 conductivities, _ = self.physarum.solve(max_iterations=500)
@@ -155,11 +168,13 @@ class HybridSolver:
                     avg_change = self.check_convergence(conductivities, previous_conductivities)
                     if avg_change < early_stop_threshold:
                         status_text.text("Physarum optimization converged early")
+                        log_message("Physarum converged - proceeding to final optimization")
                         break
                 previous_conductivities = conductivities.copy()
 
                 # Filter network based on conductivities
                 filtered_network = self.filter_network(conductivities, recovery_mode)
+                log_message(f"Network filtered: {filtered_network.number_of_edges()} edges remaining")
 
                 # Run ACO on filtered network
                 status_text.text("Running ACO optimization...")
@@ -172,7 +187,6 @@ class HybridSolver:
                         'conductivities': conductivities
                     }
 
-                    # Only include constraints if enabled
                     if self.enable_capacity:
                         aco_params.update({
                             'demands': demands,
@@ -189,48 +203,78 @@ class HybridSolver:
                         improvement = ((best_cost - cost) / best_cost * 100 
                                     if best_cost != float('inf') else 100)
                         status_text.text(f"Solution improved by {improvement:.1f}%")
+                        log_message(f"Found better solution: cost={cost:.2f}, improvement={improvement:.1f}%")
                         best_route = route
                         best_cost = cost
                         best_arrival_times = arrival_times
                         stagnation_counter = 0
 
-                        # Reinforce ACO solution in Physarum with stronger feedback
+                        # Reinforce ACO solution in Physarum
+                        boost_count = 0
                         for i in range(len(route) - 1):
                             edge = (route[i], route[i + 1])
                             if edge in conductivities:
                                 boost = 1.5 + (best_cost - cost) / best_cost
                                 conductivities[edge] *= boost
                                 conductivities[(edge[1], edge[0])] = conductivities[edge]
+                                boost_count += 1
 
                         # Penalize unused edges
                         used_edges = set((route[i], route[i+1]) for i in range(len(route)-1))
+                        penalty_count = 0
                         for edge in conductivities:
                             if edge not in used_edges and (edge[1], edge[0]) not in used_edges:
-                                conductivities[edge] *= 0.8  # Penalty for unused edges
+                                conductivities[edge] *= 0.8
+                                penalty_count += 1
 
+                        log_message(f"Reinforced {boost_count} edges and penalized {penalty_count} edges")
                         self.physarum.conductivity = conductivities
-                        recovery_mode = False  # Reset recovery mode after success
+                        recovery_mode = False
                     else:
                         stagnation_counter += 1
-                        if stagnation_counter >= 3:  # Early stopping if no improvement
+                        log_message(f"No improvement found (stagnation count: {stagnation_counter})")
+                        if stagnation_counter >= 3:
                             if not recovery_mode:
                                 status_text.text("Switching to recovery mode...")
+                                log_message("Activating recovery mode")
                                 recovery_mode = True
                                 stagnation_counter = 0
                             else:
                                 status_text.text("Terminating due to stagnation")
+                                log_message("Optimization terminated due to stagnation")
                                 break
 
                 except Exception as e:
-                    status_text.text(f"ACO failed to find valid route: {str(e)}")
+                    error_msg = f"ACO failed: {str(e)}"
+                    status_text.text(error_msg)
+                    log_message(error_msg)
                     if not recovery_mode:
-                        status_text.text("Switching to recovery mode...")
+                        recovery_msg = "Switching to recovery mode..."
+                        status_text.text(recovery_msg)
+                        log_message(recovery_msg)
                         recovery_mode = True
                         continue
                     break
+
+            # Add final summary to logs
+            log_message("\n=== Optimization Summary ===")
+            log_message(f"Final cost: {best_cost:.2f}")
+            log_message(f"Route length: {len(best_route)}")
+            log_message(f"Total iterations: {iteration + 1}")
+
+            # Add download button for logs
+            log_text = "\n".join(solver_logs)
+            with logs_expander:
+                st.download_button(
+                    "Download Logs",
+                    log_text,
+                    file_name="solver_logs.txt",
+                    mime="text/plain"
+                )
 
             return best_route, best_cost, best_arrival_times
 
         finally:
             # Ensure progress bar completion
             progress_bar.progress(1.0)
+            logs_available.empty()  # Remove logs notification
