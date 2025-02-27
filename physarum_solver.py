@@ -115,37 +115,50 @@ class PhysarumSolver:
                     self.conductivity[best_edge] = self.params.min_conductivity * 2
                     self.conductivity[(best_edge[1], best_edge[0])] = self.params.min_conductivity * 2
 
-    def compute_flows(self, source: int, sink: int) -> None:
-        """Compute flows using Kirchhoff's laws"""
+    def compute_flows(self, depot: int = 0) -> None:
+        """
+        Compute flows treating depot as source and all other nodes as destinations.
+        This simulates the foraging behavior where paths extend from the depot.
+        """
         n = self.n_points
-        A = np.zeros((n, n))  # Conductance matrix
-        b = np.zeros(n)      # RHS vector
+        total_flows = np.zeros((n, n))
 
-        # Build conductance matrix
+        # For each non-depot node as destination
+        for dest in range(1, n):
+            # Setup conductance matrix for this destination
+            A = np.zeros((n, n))  # Conductance matrix
+            b = np.zeros(n)      # RHS vector
+
+            # Build conductance matrix
+            for i, j in self.G.edges():
+                conductance = self.conductivity[(i, j)] / self.lengths[(i, j)]
+                A[i, i] += conductance
+                A[j, j] += conductance
+                A[i, j] -= conductance
+                A[j, i] -= conductance
+
+            # Set boundary conditions
+            A[depot] = 0
+            A[dest] = 0
+            A[depot, depot] = 1
+            A[dest, dest] = 1
+            b[depot] = 1  # Flow source at depot
+            b[dest] = 0   # Flow sink at destination
+
+            # Solve for pressures
+            pressures = np.linalg.solve(A, b)
+
+            # Calculate flows for this destination
+            for i, j in self.G.edges():
+                conductance = self.conductivity[(i, j)] / self.lengths[(i, j)]
+                flow = abs(conductance * (pressures[i] - pressures[j]))
+                total_flows[i, j] += flow
+                total_flows[j, i] += flow
+
+        # Update flows dictionary with accumulated values
         for i, j in self.G.edges():
-            conductance = self.conductivity[(i, j)] / self.lengths[(i, j)]
-            A[i, i] += conductance
-            A[j, j] += conductance
-            A[i, j] -= conductance
-            A[j, i] -= conductance
-
-        # Set boundary conditions
-        A[source] = 0
-        A[sink] = 0
-        A[source, source] = 1
-        A[sink, sink] = 1
-        b[source] = 1  # Source pressure
-        b[sink] = 0    # Sink pressure
-
-        # Solve for pressures
-        self.pressures = np.linalg.solve(A, b)
-
-        # Calculate flows
-        for i, j in self.G.edges():
-            conductance = self.conductivity[(i, j)] / self.lengths[(i, j)]
-            flow = conductance * (self.pressures[i] - self.pressures[j])
-            self.flows[(i, j)] = abs(flow)
-            self.flows[(j, i)] = abs(flow)
+            self.flows[(i, j)] = total_flows[i, j]
+            self.flows[(j, i)] = total_flows[j, i]
 
     def update_conductivity(self) -> float:
         """Update conductivity based on flows with dynamic decay"""
@@ -235,21 +248,15 @@ class PhysarumSolver:
                   edgecolor='white',
                   linewidth=1)
 
-        # Highlight source and sink
+        # Highlight source and sink (depot in this case)
         ax.scatter([self.points[0,0]], [self.points[0,1]], 
                   c='#06A77D',  # Green
                   s=node_size*1.5,
-                  label='Source',
+                  label='Depot',
                   zorder=3,
                   edgecolor='white',
                   linewidth=1.5)
-        ax.scatter([self.points[-1,0]], [self.points[-1,1]], 
-                  c='#D63230',  # Red
-                  s=node_size*1.5,
-                  label='Sink',
-                  zorder=3,
-                  edgecolor='white',
-                  linewidth=1.5)
+
 
         ax.set_title(f'Network State (Iteration {iteration})')
         ax.set_aspect('equal')
@@ -262,14 +269,60 @@ class PhysarumSolver:
         plt.close()  # Prevent display in notebook context
         return fig
 
-    def solve(self, 
-             source: int,
-             sink: int,
-             max_iterations: int = 1000) -> Tuple[Dict, List[float]]:
-        """Run Physarum simulation"""
-        st.write("\n=== Physarum Solver Starting ===")
-        st.write(f"Source: {source}, Sink: {sink}")
+    def extract_route(self, best_conductivity: Dict) -> List[int]:
+        """
+        Extract TSP route ensuring Hamiltonian cycle through all nodes.
+        Uses high-conductivity edges as preferences for the TSP solver.
+        """
+        # Create weighted graph from conductivities
+        G = nx.Graph()
+
+        # Add all nodes first to ensure complete graph
+        for i in range(self.n_points):
+            G.add_node(i)
+
+        # Add edges with weights based on conductivity
+        for (i, j), cond in best_conductivity.items():
+            # Use inverse conductivity as weight (stronger connections = shorter distances)
+            # Add a small epsilon to avoid division by zero
+            weight = 1.0 / (cond + 1e-6)
+
+            # Add higher penalty for weak connections
+            if cond < self.params.min_conductivity:
+                weight *= 10.0
+
+            G.add_edge(i, j, weight=weight)
+
+        # Ensure graph is complete for TSP
+        for i in range(self.n_points):
+            for j in range(i+1, self.n_points):
+                if not G.has_edge(i, j):
+                    # Add edge with high weight to discourage use
+                    dist = np.sqrt(np.sum((self.points[i] - self.points[j]) ** 2))
+                    G.add_edge(i, j, weight=dist * 10.0)
+
+        # Use Christofides algorithm for approximate TSP solution
+        # This guarantees a tour that is at most 1.5 times the optimal
+        route = list(nx.approximation.christofides(G))
+
+        # Ensure route starts and ends at depot (0)
+        if route[0] != 0:
+            depot_pos = route.index(0)
+            route = route[depot_pos:] + route[:depot_pos]
+
+        # Add return to depot
+        if route[-1] != 0:
+            route.append(0)
+
+        return route
+
+    def solve(self, max_iterations: int = 1000) -> Tuple[Dict, List[float]]:
+        """
+        Run Physarum simulation treating node 0 as depot
+        """
+        st.write("\n=== Physarum TSP Solver Starting ===")
         st.write(f"Number of nodes: {self.n_points}")
+        st.write(f"Using node 0 as depot")
 
         costs = []
         best_cost = float('inf')
@@ -277,8 +330,8 @@ class PhysarumSolver:
         stagnation_counter = 0
 
         for iteration in range(max_iterations):
-            # Compute flows
-            self.compute_flows(source, sink)
+            # Compute flows from depot
+            self.compute_flows(depot=0)
 
             # Update conductivity
             max_change = self.update_conductivity()
@@ -312,48 +365,6 @@ class PhysarumSolver:
                 break
 
         return best_conductivity, costs
-
-    def extract_route(self, best_conductivity: Dict) -> List[int]:
-        """
-        Extract route from conductivity configuration using TSP solver
-        Args:
-            best_conductivity: Conductivity values for each edge
-        Returns:
-            route: List of node indices forming the route
-        """
-        # Create graph with significant connections
-        G = nx.Graph()
-        for (i, j), cond in best_conductivity.items():
-            if cond > self.params.min_conductivity:
-                # Use inverse conductivity as weight (stronger connections = shorter distances)
-                G.add_edge(i, j, weight=1.0/cond)
-
-        # Ensure all nodes are connected
-        if not nx.is_connected(G):
-            st.warning("Network not fully connected, adding minimal connections")
-            for i in range(self.n_points):
-                if i not in G:
-                    # Connect to nearest node in existing graph
-                    min_dist = float('inf')
-                    nearest = None
-                    for j in G.nodes():
-                        dist = np.sqrt(np.sum((self.points[i] - self.points[j]) ** 2))
-                        if dist < min_dist:
-                            min_dist = dist
-                            nearest = j
-                    if nearest is not None:
-                        G.add_edge(i, nearest, weight=min_dist)
-
-        # Use NetworkX's approximation for TSP
-        route = list(nx.approximation.traveling_salesman_problem(G, cycle=True))
-
-        # Ensure route starts and ends at depot (0)
-        if route[0] != 0:
-            # Find position of depot and rotate list
-            depot_pos = route.index(0)
-            route = route[depot_pos:] + route[1:depot_pos] + [0]
-
-        return route
 
 def create_random_points(n_points: int, 
                        size: float = 100.0) -> np.ndarray:
