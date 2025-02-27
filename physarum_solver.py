@@ -341,7 +341,7 @@ class PhysarumSolver:
         return route
 
     def solve(self, max_iterations: int = 1000) -> Tuple[Dict, List[float]]:
-        """Run optimized Physarum simulation"""
+        """Run optimized Physarum simulation with progress tracking"""
         if self.n_points <= 1:
             return {}, []
 
@@ -350,50 +350,64 @@ class PhysarumSolver:
         stagnation_count = 0
         previous_cost = float('inf')
 
-        for iteration in range(max_iterations):
-            # Compute flows using parallel processing
-            flows = self.compute_flows()
+        # Create progress bar
+        progress_bar = st.progress(0)
+        status_text = st.empty()
 
-            # Update conductivity
-            max_change = self.update_conductivity(flows)
+        try:
+            for iteration in range(max_iterations):
+                # Update progress every 5 iterations
+                if iteration % 5 == 0:
+                    progress = iteration / max_iterations
+                    progress_bar.progress(progress)
+                    if iteration % 50 == 0:  # Reduce status updates
+                        status_text.text(f"Physarum Iteration {iteration}/{max_iterations}")
 
-            # Calculate cost (less frequently)
-            if iteration % 10 == 0:
-                cost = self.calculate_network_cost()
-                costs.append(cost)
+                # Compute flows using parallel processing
+                flows = self.compute_flows()
 
-                # Check for improvement
-                rel_improvement = (previous_cost - cost) / previous_cost if previous_cost != float('inf') else 1.0
+                # Update conductivity
+                max_change = self.update_conductivity(flows)
 
-                if cost < best_cost:
-                    best_cost = cost
-                    stagnation_count = 0
-                    if rel_improvement < self.params.min_improvement:
+                # Calculate cost (less frequently)
+                if iteration % 10 == 0:
+                    cost = self.calculate_network_cost()
+                    costs.append(cost)
+
+                    # Check for improvement
+                    rel_improvement = (previous_cost - cost) / previous_cost if previous_cost != float('inf') else 1.0
+
+                    if cost < best_cost:
+                        best_cost = cost
+                        stagnation_count = 0
+                        if rel_improvement > 0.01:  # Log only significant improvements
+                            status_text.text(f"Cost improved by {rel_improvement*100:.1f}%")
+                    else:
                         stagnation_count += 1
-                else:
-                    stagnation_count += 1
 
-                previous_cost = cost
+                    previous_cost = cost
 
-                # Log only significant changes
-                if iteration == 0 or rel_improvement > 0.01:
-                    st.write(f"Iteration {iteration}: Cost = {cost:.2f}")
+                # Early stopping checks
+                if max_change < self.params.convergence_threshold:
+                    status_text.text("Converged - optimization complete")
+                    progress_bar.progress(1.0)
+                    break
 
-            # Early stopping checks
-            if max_change < self.params.convergence_threshold:
-                st.write(f"Converged after {iteration} iterations")
-                break
+                if stagnation_count >= self.params.stagnation_limit:
+                    status_text.text("Stopping due to stagnation")
+                    progress_bar.progress(1.0)
+                    break
 
-            if stagnation_count >= self.params.stagnation_limit:
-                st.write(f"Stopping due to stagnation after {iteration} iterations")
-                break
+            # Convert final conductivity to dictionary format
+            rows, cols = self.conductivity_matrix.nonzero()
+            conductivities = {(int(i), int(j)): float(self.conductivity_matrix[i,j])
+                            for i, j in zip(rows, cols)}
 
-        # Convert final conductivity to dictionary format
-        rows, cols = self.conductivity_matrix.nonzero()
-        conductivities = {(int(i), int(j)): float(self.conductivity_matrix[i,j])
-                         for i, j in zip(rows, cols)}
+            return conductivities, costs
 
-        return conductivities, costs
+        finally:
+            # Ensure progress bar completion
+            progress_bar.progress(1.0)
 
 def create_random_points(n_points: int, 
                        size: float = 100.0) -> np.ndarray:

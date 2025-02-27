@@ -121,9 +121,16 @@ class HybridSolver:
             best_cost: Route cost
             arrival_times: Arrival times at each node
         """
-        st.write("\n=== Starting Hybrid Physarum-ACO Solver ===")
-        st.write(f"Time Windows: {'Enabled' if self.enable_time_windows else 'Disabled'}")
-        st.write(f"Capacity Constraints: {'Enabled' if self.enable_capacity else 'Disabled'}")
+        # Create progress tracking elements
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+
+        status_text.text("=== Starting Hybrid Physarum-ACO Solver ===")
+
+        if self.enable_time_windows:
+            status_text.text("Time Windows: Enabled")
+        if self.enable_capacity:
+            status_text.text("Capacity Constraints: Enabled")
 
         best_route = None
         best_cost = float('inf')
@@ -133,91 +140,97 @@ class HybridSolver:
         stagnation_counter = 0
         early_stop_threshold = 0.001  # 0.1% improvement threshold
 
-        for iteration in range(self.max_hybrid_iterations):
-            st.write(f"\nHybrid Iteration {iteration + 1}")
+        try:
+            for iteration in range(self.max_hybrid_iterations):
+                # Update progress
+                progress = (iteration + 1) / self.max_hybrid_iterations
+                progress_bar.progress(progress)
+                status_text.text(f"Hybrid Iteration {iteration + 1}/{self.max_hybrid_iterations}")
 
-            # Run Physarum simulation with early stopping
-            st.write("Running Physarum optimization...")
-            conductivities, _ = self.physarum.solve(max_iterations=500)
+                # Run Physarum simulation with early stopping
+                conductivities, _ = self.physarum.solve(max_iterations=500)
 
-            # Check for Physarum convergence
-            if previous_conductivities:
-                avg_change = self.check_convergence(conductivities, previous_conductivities)
-                if avg_change < early_stop_threshold:
-                    st.write("Physarum optimization converged early")
+                # Check for Physarum convergence
+                if previous_conductivities:
+                    avg_change = self.check_convergence(conductivities, previous_conductivities)
+                    if avg_change < early_stop_threshold:
+                        status_text.text("Physarum optimization converged early")
+                        break
+                previous_conductivities = conductivities.copy()
+
+                # Filter network based on conductivities
+                filtered_network = self.filter_network(conductivities, recovery_mode)
+
+                # Run ACO on filtered network
+                status_text.text("Running ACO optimization...")
+                try:
+                    # Prepare parameters based on enabled constraints
+                    aco_params = {
+                        'points': self.points,
+                        'route_nodes': list(range(self.n_points)),
+                        'n_iterations': 100,
+                        'conductivities': conductivities
+                    }
+
+                    # Only include constraints if enabled
+                    if self.enable_capacity:
+                        aco_params.update({
+                            'demands': demands,
+                            'capacity': capacity
+                        })
+
+                    if self.enable_time_windows:
+                        aco_params['time_windows'] = self.time_windows
+
+                    route, cost, arrival_times = self.aco.solve(**aco_params)
+
+                    # Update best solution
+                    if cost < best_cost:
+                        improvement = ((best_cost - cost) / best_cost * 100 
+                                    if best_cost != float('inf') else 100)
+                        status_text.text(f"Solution improved by {improvement:.1f}%")
+                        best_route = route
+                        best_cost = cost
+                        best_arrival_times = arrival_times
+                        stagnation_counter = 0
+
+                        # Reinforce ACO solution in Physarum with stronger feedback
+                        for i in range(len(route) - 1):
+                            edge = (route[i], route[i + 1])
+                            if edge in conductivities:
+                                boost = 1.5 + (best_cost - cost) / best_cost
+                                conductivities[edge] *= boost
+                                conductivities[(edge[1], edge[0])] = conductivities[edge]
+
+                        # Penalize unused edges
+                        used_edges = set((route[i], route[i+1]) for i in range(len(route)-1))
+                        for edge in conductivities:
+                            if edge not in used_edges and (edge[1], edge[0]) not in used_edges:
+                                conductivities[edge] *= 0.8  # Penalty for unused edges
+
+                        self.physarum.conductivity = conductivities
+                        recovery_mode = False  # Reset recovery mode after success
+                    else:
+                        stagnation_counter += 1
+                        if stagnation_counter >= 3:  # Early stopping if no improvement
+                            if not recovery_mode:
+                                status_text.text("Switching to recovery mode...")
+                                recovery_mode = True
+                                stagnation_counter = 0
+                            else:
+                                status_text.text("Terminating due to stagnation")
+                                break
+
+                except Exception as e:
+                    status_text.text(f"ACO failed to find valid route: {str(e)}")
+                    if not recovery_mode:
+                        status_text.text("Switching to recovery mode...")
+                        recovery_mode = True
+                        continue
                     break
-            previous_conductivities = conductivities.copy()
 
-            # Filter network based on conductivities
-            filtered_network = self.filter_network(conductivities, recovery_mode)
+            return best_route, best_cost, best_arrival_times
 
-            # Run ACO on filtered network
-            st.write("Running ACO on filtered network...")
-            try:
-                # Prepare parameters based on enabled constraints
-                aco_params = {
-                    'points': self.points,
-                    'route_nodes': list(range(self.n_points)),
-                    'n_iterations': 100,
-                    'conductivities': conductivities
-                }
-
-                # Only include constraints if enabled
-                if self.enable_capacity:
-                    aco_params.update({
-                        'demands': demands,
-                        'capacity': capacity
-                    })
-
-                if self.enable_time_windows:
-                    aco_params['time_windows'] = self.time_windows
-
-                route, cost, arrival_times = self.aco.solve(**aco_params)
-
-                # Update best solution
-                if cost < best_cost:
-                    improvement = ((best_cost - cost) / best_cost * 100 
-                                if best_cost != float('inf') else 100)
-                    st.write(f"Solution improved by {improvement:.1f}%")
-                    best_route = route
-                    best_cost = cost
-                    best_arrival_times = arrival_times
-                    stagnation_counter = 0
-
-                    # Reinforce ACO solution in Physarum with stronger feedback
-                    for i in range(len(route) - 1):
-                        edge = (route[i], route[i + 1])
-                        if edge in conductivities:
-                            boost = 1.5 + (best_cost - cost) / best_cost
-                            conductivities[edge] *= boost
-                            conductivities[(edge[1], edge[0])] = conductivities[edge]
-
-                    # Penalize unused edges
-                    used_edges = set((route[i], route[i+1]) for i in range(len(route)-1))
-                    for edge in conductivities:
-                        if edge not in used_edges and (edge[1], edge[0]) not in used_edges:
-                            conductivities[edge] *= 0.8  # Penalty for unused edges
-
-                    self.physarum.conductivity = conductivities
-                    recovery_mode = False  # Reset recovery mode after success
-                else:
-                    st.write("No improvement found in this iteration")
-                    stagnation_counter += 1
-                    if stagnation_counter >= 3:  # Early stopping if no improvement
-                        if not recovery_mode:
-                            st.write("Switching to recovery mode...")
-                            recovery_mode = True
-                            stagnation_counter = 0
-                        else:
-                            st.write("Terminating due to stagnation")
-                            break
-
-            except Exception as e:
-                st.warning(f"ACO failed to find valid route: {str(e)}")
-                if not recovery_mode:
-                    st.write("Switching to recovery mode...")
-                    recovery_mode = True
-                    continue
-                break
-
-        return best_route, best_cost, best_arrival_times
+        finally:
+            # Ensure progress bar completion
+            progress_bar.progress(1.0)
