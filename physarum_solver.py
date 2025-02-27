@@ -70,8 +70,6 @@ class PhysarumSolver:
         conductance = self.conductivity_matrix.multiply(1.0 / (self.distances + 1e-6))
         conductance = conductance.tocsr()
 
-        st.write(f"Initial conductance matrix shape: {conductance.shape}, nnz: {conductance.nnz}")
-
         # Verify matrix has entries
         if conductance.nnz == 0:
             st.error("Empty conductance matrix - no valid connections")
@@ -119,7 +117,7 @@ class PhysarumSolver:
             return None
 
         if conductance.shape != (n, n):
-            st.error(f"Conductance matrix has wrong shape: {conductance.shape}, expected: ({n}, {n})")
+            st.error(f"Invalid conductance matrix dimensions")
             return None
 
         try:
@@ -129,7 +127,7 @@ class PhysarumSolver:
 
             # Verify diagonal array shape
             if diag.shape[0] != n:
-                st.error(f"Diagonal array has wrong shape: {diag.shape}, expected: ({n},)")
+                st.error("Invalid diagonal array dimensions")
                 return None
 
             A = A - sparse.diags(diag, format='csr')
@@ -148,7 +146,7 @@ class PhysarumSolver:
 
             # Verify pressure vector shape
             if pressures.shape[0] != n:
-                st.error(f"Pressure vector has wrong shape: {pressures.shape}, expected: ({n},)")
+                st.error("Invalid pressure vector dimensions")
                 return None
 
             # Get nonzero indices
@@ -159,24 +157,15 @@ class PhysarumSolver:
                 st.error("Invalid sparse matrix indices")
                 return None
 
-            # Calculate pressure differences (verify shapes first)
-            p_rows = pressures[rows]
-            p_cols = pressures[cols]
-
-            if p_rows.shape != p_cols.shape:
-                st.error(f"Pressure difference shapes mismatch: {p_rows.shape} vs {p_cols.shape}")
-                return None
-
             # Calculate flows using sparse operations
             flow_matrix = sparse.lil_matrix((n, n))
-            flows = conductance.multiply(p_rows - p_cols)
+            flows = conductance.multiply(pressures[rows] - pressures[cols])
             flow_matrix[rows, cols] = np.abs(flows.data)
 
             return flow_matrix.tocsr()
 
         except Exception as e:
-            st.error(f"Flow computation failed: {str(e)}")
-            st.write(f"Debug - Matrix shapes: A={A.shape}, b={b.shape}, conductance={conductance.shape}")
+            st.error(f"Flow computation error: {str(e)}")
             return None
 
     def update_conductivity(self, flows: sparse.spmatrix) -> float:
