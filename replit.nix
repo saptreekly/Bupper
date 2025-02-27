@@ -1,5 +1,11 @@
 {pkgs}: {
   deps = [
+    pkgs.vulkan-loader
+    pkgs.libxkbcommon
+    pkgs.wayland
+    pkgs.systemd
+    pkgs.alsa-lib
+    pkgs.libudev
     pkgs.glibcLocales
     pkgs.tk
     pkgs.tcl
