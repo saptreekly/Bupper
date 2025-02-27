@@ -410,14 +410,16 @@ class PhysarumSolver:
             log_message(f"Final cost: {best_cost:.2f}")
             log_message(f"Total iterations: {iteration + 1}")
 
-            # Add download button for logs
+            # Add download button with unique key once at the end
             log_text = "\n".join(solver_logs)
+            button_key = f"physarum_logs_{int(time.time())}"
             with logs_expander:
                 st.download_button(
                     "Download Logs",
                     log_text,
                     file_name="physarum_logs.txt",
-                    mime="text/plain"
+                    mime="text/plain",
+                    key=button_key
                 )
 
             # Convert final conductivity to dictionary format

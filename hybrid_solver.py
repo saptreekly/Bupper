@@ -262,14 +262,16 @@ class HybridSolver:
             log_message(f"Route length: {len(best_route)}")
             log_message(f"Total iterations: {iteration + 1}")
 
-            # Add download button for logs
+            # Add download button for logs with unique key
             log_text = "\n".join(solver_logs)
+            button_key = f"hybrid_solver_logs_{int(time.time())}"
             with logs_expander:
                 st.download_button(
                     "Download Logs",
                     log_text,
                     file_name="solver_logs.txt",
-                    mime="text/plain"
+                    mime="text/plain",
+                    key=button_key
                 )
 
             return best_route, best_cost, best_arrival_times
