@@ -11,7 +11,6 @@ from benchmark_utils import BenchmarkManager
 import matplotlib.pyplot as plt
 from hybrid_solver import HybridSolver #Import the hybrid solver
 
-
 def verify_and_fix_routes(routes, num_points, distances, demands, capacity, time_windows, speed, max_repair_iterations=50, cost_increase_threshold=0.2, time_penalty_multiplier=3.0):
     fixed_routes = []
     for route in routes:
@@ -41,6 +40,30 @@ def verify_and_fix_routes(routes, num_points, distances, demands, capacity, time
 def main():
     st.title("Network Optimization Solvers")
 
+    # Common parameters for all solvers
+    st.sidebar.header("Problem Parameters")
+
+    # Instance size - common for all solvers
+    st.sidebar.subheader("Instance Size")
+    n_points = st.sidebar.slider("Number of Points", 10, 1000, 50,
+        help="Total number of delivery points (excluding depot)")
+
+    # Vehicle Parameters - common for all solvers
+    st.sidebar.subheader("Vehicle Parameters")
+    vehicle_capacity = st.sidebar.slider("Vehicle Capacity", 10, 200, 100,
+        help="Maximum capacity for each vehicle")
+    vehicle_speed = st.sidebar.slider("Vehicle Speed", 0.1, 5.0, 1.0,
+        help="Travel speed (distance/time unit)")
+
+    # Time Window Parameters - common for all solvers
+    st.sidebar.subheader("Time Window Parameters")
+    time_horizon = st.sidebar.slider("Time Horizon", 50.0, 200.0, 100.0,
+        help="Maximum planning horizon")
+    min_window = st.sidebar.slider("Min Time Window", 5.0, 30.0, 10.0,
+        help="Minimum width of time windows")
+    max_window = st.sidebar.slider("Max Time Window", 20.0, 60.0, 30.0,
+        help="Maximum width of time windows")
+
     # Add solver selection
     solver_type = st.sidebar.selectbox(
         "Select Solver Type",
@@ -63,16 +86,16 @@ def main():
         st.sidebar.header("Problem Parameters")
 
         # Instance size
-        st.sidebar.subheader("Instance Size")
-        n_points = st.sidebar.slider("Number of Points", 10, 1000, 50,
-            help="Total number of delivery points (excluding depot)")
+        #st.sidebar.subheader("Instance Size")
+        #n_points = st.sidebar.slider("Number of Points", 10, 1000, 50,
+        #    help="Total number of delivery points (excluding depot)")
 
         # Vehicle Parameters
-        st.sidebar.subheader("Vehicle Parameters")
-        vehicle_capacity = st.sidebar.slider("Vehicle Capacity", 10, 200, 100,
-            help="Maximum capacity for each vehicle")
-        vehicle_speed = st.sidebar.slider("Vehicle Speed", 0.1, 5.0, 1.0,
-            help="Travel speed (distance/time unit)")
+        #st.sidebar.subheader("Vehicle Parameters")
+        #vehicle_capacity = st.sidebar.slider("Vehicle Capacity", 10, 200, 100,
+        #    help="Maximum capacity for each vehicle")
+        #vehicle_speed = st.sidebar.slider("Vehicle Speed", 0.1, 5.0, 1.0,
+        #    help="Travel speed (distance/time unit)")
 
         # Remove manual vehicle count override since it's now fully automatic
         st.sidebar.markdown("""
@@ -83,13 +106,13 @@ def main():
         """)
 
         # Time Window Parameters
-        st.sidebar.subheader("Time Window Parameters")
-        time_horizon = st.sidebar.slider("Time Horizon", 50.0, 200.0, 100.0,
-            help="Maximum planning horizon")
-        min_window = st.sidebar.slider("Min Time Window", 5.0, 30.0, 10.0,
-            help="Minimum width of time windows")
-        max_window = st.sidebar.slider("Max Time Window", 20.0, 60.0, 30.0,
-            help="Maximum width of time windows")
+        #st.sidebar.subheader("Time Window Parameters")
+        #time_horizon = st.sidebar.slider("Time Horizon", 50.0, 200.0, 100.0,
+        #    help="Maximum planning horizon")
+        #min_window = st.sidebar.slider("Min Time Window", 5.0, 30.0, 10.0,
+        #    help="Minimum width of time windows")
+        #max_window = st.sidebar.slider("Max Time Window", 20.0, 60.0, 30.0,
+        #    help="Maximum width of time windows")
 
         # Add new parameters to sidebar
         st.sidebar.subheader("Optimization Parameters")
@@ -376,8 +399,8 @@ def main():
 
         # Simulation parameters
         st.sidebar.subheader("Physarum Parameters")
-        n_points = st.sidebar.slider("Number of Points", 5, 50, 10,
-            help="Number of nodes in the network")
+        #n_points = st.sidebar.slider("Number of Points", 5, 50, 10,
+        #    help="Number of nodes in the network")
 
         gamma = st.sidebar.slider("Growth Rate (γ)", 0.5, 2.0, 1.3,
             help="Flow feedback strength")
