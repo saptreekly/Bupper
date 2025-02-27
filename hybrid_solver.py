@@ -22,7 +22,7 @@ class HybridSolver:
         self.speed = speed
         self.convergence_threshold = convergence_threshold
         self.max_hybrid_iterations = max_hybrid_iterations
-        self.k_neighbors = 5  # Minimum number of neighbors to preserve
+        self.k_neighbors = 5  # Number of nearest neighbors for initial connectivity
 
         # Initialize Physarum solver with enhanced parameters
         physarum_params = PhysarumParams(
@@ -72,7 +72,7 @@ class HybridSolver:
         for (i, j), cond in conductivities.items():
             if cond > threshold:
                 weight = 1.0 / (cond + 1e-6)  # Inverse of conductivity
-                G.add_edge(i, j, weight=weight, conductivity=cond)
+                G.add_edge(i, j, weight=weight)
                 strong_edges.add((i, j))
                 strong_edges.add((j, i))
 
@@ -89,11 +89,7 @@ class HybridSolver:
                     if not G.has_edge(i, j):
                         # Add edge with weight based on distance
                         weight = distances[i][j]
-                        if (i, j) in conductivities:
-                            cond = conductivities[(i, j)]
-                        else:
-                            cond = 1.0 / (weight + 1e-6)  # Initialize new conductivity
-                        G.add_edge(i, j, weight=weight, conductivity=cond)
+                        G.add_edge(i, j, weight=weight)
                         current_neighbors += 1
 
         return G
@@ -123,13 +119,6 @@ class HybridSolver:
             # Filter network based on conductivities
             filtered_network = self.filter_network(conductivities, recovery_mode)
 
-            # Initialize pheromone levels based on conductivities
-            initial_pheromone = {}
-            for i, j, data in filtered_network.edges(data=True):
-                pheromone = data['conductivity'] / (data['weight'] + 1e-6)
-                initial_pheromone[(i, j)] = pheromone
-                initial_pheromone[(j, i)] = pheromone
-
             # Run ACO on filtered network
             st.write("Running ACO on filtered network...")
             try:
@@ -139,8 +128,7 @@ class HybridSolver:
                     demands,
                     capacity,
                     n_iterations=100,
-                    time_windows=self.time_windows,
-                    initial_pheromone=initial_pheromone
+                    time_windows=self.time_windows
                 )
 
                 # Update best solution
