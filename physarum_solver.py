@@ -6,6 +6,8 @@ import streamlit as st
 from dataclasses import dataclass
 import time
 from utils import TimeWindow
+from scipy import sparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 @dataclass
 class PhysarumParams:
@@ -15,205 +17,134 @@ class PhysarumParams:
     dt: float = 0.01   # Time step
     convergence_threshold: float = 1e-6
     min_conductivity: float = 0.01  # Minimum conductivity threshold
-    connectivity_check_interval: int = 50  # Check connectivity every N iterations
-    k_neighbors: int = 5  # Number of nearest neighbors for initial connectivity
-    weak_flow_threshold: float = 0.1  # Threshold for identifying weak flows
-    decay_multiplier: float = 1.5  # Increased decay rate for weak connections
+    stagnation_limit: int = 20  # Maximum iterations without improvement
+    min_improvement: float = 0.001  # Minimum relative improvement threshold
+    max_conductivity: float = 10.0  # Maximum conductivity cap
 
 class PhysarumSolver:
-    """Physarum-inspired network optimizer"""
+    """Optimized Physarum-inspired network optimizer"""
 
     def __init__(self, 
                  points: np.ndarray,
                  params: Optional[PhysarumParams] = None,
                  time_windows: Optional[Dict[int, TimeWindow]] = None,
                  speed: float = 1.0):
-        """Initialize solver with points and parameters"""
         self.points = points
         self.n_points = len(points)
         self.params = params or PhysarumParams()
         self.time_windows = time_windows
         self.speed = speed
 
-        # Initialize graph with k-nearest neighbors
-        self.G = nx.Graph()
-        self.pos = {i: points[i] for i in range(self.n_points)}
+        # Calculate distances using vectorized operations
+        diff = points[:, np.newaxis, :] - points[np.newaxis, :, :]
+        self.distances = np.sqrt(np.sum(diff * diff, axis=-1))
 
-        # Calculate all pairwise distances
-        distances = np.array([[np.sqrt(np.sum((p1 - p2) ** 2))
-                             for p2 in points]
-                             for p1 in points])
+        # Initialize sparse conductivity matrix
+        self.conductivity_matrix = sparse.lil_matrix((self.n_points, self.n_points))
+        self.initialize_conductivity()
 
-        # Connect each node to its k nearest neighbors
+    def initialize_conductivity(self) -> None:
+        """Initialize conductivity using k-nearest neighbors"""
+        k = min(5, self.n_points - 1)  # Adaptive k based on problem size
+
+        # Find k nearest neighbors for each node
         for i in range(self.n_points):
             # Get indices of k nearest neighbors (excluding self)
-            nearest = np.argsort(distances[i])[1:self.params.k_neighbors + 1]
+            dist_to_i = self.distances[i]
+            nearest = np.argpartition(dist_to_i, k+1)[:k+1]
+            nearest = nearest[nearest != i]  # Remove self if present
+
+            # Initialize conductivity for nearest neighbors
             for j in nearest:
-                self.G.add_edge(i, j)
+                init_cond = 1.0 / (self.distances[i,j] + 1e-6)
+                self.conductivity_matrix[i,j] = init_cond
+                self.conductivity_matrix[j,i] = init_cond
 
-        # Initialize edge properties
-        self.lengths = {}
-        self.conductivity = {}
-        for (i, j) in self.G.edges():
-            length = distances[i][j]
-            self.lengths[(i, j)] = length
-            self.lengths[(j, i)] = length
-
-            # Initialize with higher minimum conductivity
-            initial_conductivity = max(1.0 / length, self.params.min_conductivity)
-            self.conductivity[(i, j)] = initial_conductivity
-            self.conductivity[(j, i)] = initial_conductivity
-
-        self.pressures = np.zeros(self.n_points)
-        self.flows = {edge: 0.0 for edge in self.G.edges()}
-
-        # Ensure initial connectivity
-        if not self.check_connectivity():
-            self.restore_connectivity()
-            st.write("Added minimum connections to ensure initial connectivity")
-
-    def check_connectivity(self) -> bool:
-        """Check if network is fully connected with significant conductivities."""
-        G_significant = nx.Graph()
-        for (i, j), cond in self.conductivity.items():
-            if cond > self.params.min_conductivity:
-                G_significant.add_edge(i, j)
-        return nx.is_connected(G_significant)
-
-    def restore_connectivity(self):
-        """Restore minimum connections to ensure network connectivity."""
-        G_significant = nx.Graph()
-        for (i, j), cond in self.conductivity.items():
-            if cond > self.params.min_conductivity:
-                G_significant.add_edge(i, j)
-
-        components = list(nx.connected_components(G_significant))
-        if len(components) > 1:
-            st.write(f"Restoring connectivity between {len(components)} components")
-            # Connect components using minimum spanning tree approach
-            for i in range(len(components)-1):
-                comp1 = list(components[i])
-                comp2 = list(components[i+1])
-                min_dist = float('inf')
-                best_edge = None
-
-                # Find shortest edge between components
-                for n1 in comp1:
-                    for n2 in comp2:
-                        dist = np.sqrt(np.sum((self.points[n1] - self.points[n2]) ** 2))
-                        if dist < min_dist:
-                            min_dist = dist
-                            best_edge = (n1, n2)
-
-                if best_edge:
-                    # Add edge to graph and initialize properties
-                    self.G.add_edge(*best_edge)
-                    self.lengths[best_edge] = min_dist
-                    self.lengths[(best_edge[1], best_edge[0])] = min_dist
-
-                    # Restore conductivity
-                    self.conductivity[best_edge] = self.params.min_conductivity * 2
-                    self.conductivity[(best_edge[1], best_edge[0])] = self.params.min_conductivity * 2
-
-    def compute_flows(self, depot: int = 0) -> None:
-        """
-        Compute flows treating depot as source and all other nodes as destinations.
-        This simulates the foraging behavior where paths extend from the depot.
-        """
+    def compute_flows(self) -> np.ndarray:
+        """Compute flows using vectorized operations"""
         n = self.n_points
-        total_flows = np.zeros((n, n))
+        total_flows = sparse.lil_matrix((n, n))
+        conductance = self.conductivity_matrix.multiply(1.0 / (self.distances + 1e-6))
 
-        # For each non-depot node as destination
-        for dest in range(1, n):
-            # Setup conductance matrix for this destination
-            A = np.zeros((n, n))  # Conductance matrix
-            b = np.zeros(n)      # RHS vector
+        # Parallelize flow computation for each destination
+        with ThreadPoolExecutor() as executor:
+            futures = []
+            for dest in range(1, n):  # Skip depot
+                futures.append(executor.submit(self._compute_flow_for_dest, 
+                                            conductance, dest))
 
-            # Build conductance matrix
-            for i, j in self.G.edges():
-                conductance = self.conductivity[(i, j)] / self.lengths[(i, j)]
-                A[i, i] += conductance
-                A[j, j] += conductance
-                A[i, j] -= conductance
-                A[j, i] -= conductance
+            # Collect results
+            for future in as_completed(futures):
+                flow_matrix = future.result()
+                total_flows += flow_matrix
 
-            # Set boundary conditions
-            A[depot] = 0
-            A[dest] = 0
-            A[depot, depot] = 1
-            A[dest, dest] = 1
-            b[depot] = 1  # Flow source at depot
-            b[dest] = 0   # Flow sink at destination
+        return total_flows.tocsr()
 
-            # Solve for pressures
-            pressures = np.linalg.solve(A, b)
+    def _compute_flow_for_dest(self, conductance: sparse.spmatrix, dest: int) -> sparse.spmatrix:
+        """Compute flow for a single destination"""
+        n = self.n_points
 
-            # Calculate flows for this destination
-            for i, j in self.G.edges():
-                conductance = self.conductivity[(i, j)] / self.lengths[(i, j)]
-                flow = abs(conductance * (pressures[i] - pressures[j]))
-                total_flows[i, j] += flow
-                total_flows[j, i] += flow
+        # Setup linear system
+        A = conductance.tocsr()
+        diag = np.array(A.sum(axis=1)).flatten()
+        A = A - sparse.diags(diag)
 
-        # Update flows dictionary with accumulated values
-        for i, j in self.G.edges():
-            self.flows[(i, j)] = total_flows[i, j]
-            self.flows[(j, i)] = total_flows[j, i]
+        # Set boundary conditions
+        b = np.zeros(n)
+        b[0] = 1.0  # Source at depot
+        b[dest] = -1.0  # Sink
 
-    def update_conductivity(self) -> float:
-        """Update conductivity based on flows with dynamic decay"""
-        max_change = 0.0
+        # Solve system
+        pressures = sparse.linalg.spsolve(A, b)
 
-        # Calculate average flow for adaptive thresholding
-        avg_flow = np.mean(list(self.flows.values()))
-        flow_threshold = avg_flow * self.params.weak_flow_threshold
+        # Calculate flows
+        flow_matrix = sparse.lil_matrix((n, n))
+        rows, cols = conductance.nonzero()
+        flows = conductance.multiply(pressures[rows] - pressures[cols])
+        flow_matrix[rows, cols] = np.abs(flows.data)
 
-        for edge in self.G.edges():
-            flow = self.flows[edge]
-            old_conductivity = self.conductivity[edge]
+        return flow_matrix
 
-            # Dynamic decay rate based on flow strength
-            decay_rate = (self.params.mu * self.params.decay_multiplier 
-                        if flow < flow_threshold else self.params.mu)
+    def update_conductivity(self, flows: sparse.spmatrix) -> float:
+        """Update conductivity using vectorized operations"""
+        # Calculate growth and decay terms
+        growth = flows.power(self.params.gamma).tocsr()
+        decay = self.conductivity_matrix.multiply(self.params.mu)
 
-            # Growth term based on flow threshold
-            if flow > flow_threshold:
-                growth_term = pow(flow, self.params.gamma)
-            else:
-                growth_term = pow(flow_threshold, self.params.gamma) * 0.5  # Reduced growth for weak flows
+        # Update conductivity
+        delta = self.params.dt * (growth - decay)
+        new_conductivity = self.conductivity_matrix + delta
 
-            # Update conductivity with dynamic decay
-            new_conductivity = old_conductivity + self.params.dt * (
-                growth_term - decay_rate * old_conductivity
-            )
+        # Apply bounds
+        new_conductivity.data = np.clip(new_conductivity.data,
+                                      self.params.min_conductivity,
+                                      self.params.max_conductivity)
 
-            # Apply minimum conductivity constraint
-            new_conductivity = max(self.params.min_conductivity, new_conductivity)
+        # Calculate maximum change
+        max_change = np.max(np.abs(delta.data)) if delta.nnz > 0 else 0
 
-            self.conductivity[edge] = new_conductivity
-            max_change = max(max_change, abs(new_conductivity - old_conductivity))
-
+        self.conductivity_matrix = new_conductivity
         return max_change
 
     def calculate_network_cost(self) -> float:
         """Calculate total network cost"""
-        return sum(self.conductivity[edge] * self.lengths[edge] 
-                  for edge in self.G.edges())
+        return np.sum(self.conductivity_matrix.multiply(self.distances))
 
     def visualize_network(self, iteration: int) -> plt.Figure:
         """Visualize current network state with enhanced visibility"""
         fig, ax = plt.subplots(figsize=(10, 10))
 
         # Draw edges with enhanced visibility
-        max_conductivity = max(self.conductivity.values())
+        max_conductivity = self.conductivity_matrix.max()
         min_conductivity = self.params.min_conductivity
 
         # Define color scheme
         edge_color = '#1E56A0'  # Royal blue
         strong_edge_color = '#D63230'  # Crimson for strong connections
 
-        for (i, j) in self.G.edges():
-            relative_strength = (self.conductivity[(i, j)] - min_conductivity) / (max_conductivity - min_conductivity)
+        rows, cols = self.conductivity_matrix.nonzero()
+        for i, j in zip(rows, cols):
+            relative_strength = (self.conductivity_matrix[i, j] - min_conductivity) / (max_conductivity - min_conductivity)
 
             if relative_strength > 0.001:  # Lower threshold for visibility
                 # Adjust line thickness (increased scale)
@@ -317,54 +248,59 @@ class PhysarumSolver:
         return route
 
     def solve(self, max_iterations: int = 1000) -> Tuple[Dict, List[float]]:
-        """
-        Run Physarum simulation treating node 0 as depot
-        """
-        st.write("\n=== Physarum TSP Solver Starting ===")
-        st.write(f"Number of nodes: {self.n_points}")
-        st.write(f"Using node 0 as depot")
+        """Run optimized Physarum simulation"""
+        if self.n_points <= 1:
+            return {}, []
 
         costs = []
         best_cost = float('inf')
-        best_conductivity = None
-        stagnation_counter = 0
+        stagnation_count = 0
+        previous_cost = float('inf')
 
         for iteration in range(max_iterations):
-            # Compute flows from depot
-            self.compute_flows(depot=0)
+            # Compute flows using parallel processing
+            flows = self.compute_flows()
 
             # Update conductivity
-            max_change = self.update_conductivity()
+            max_change = self.update_conductivity(flows)
 
-            # Periodically check and restore connectivity
-            if iteration % self.params.connectivity_check_interval == 0:
-                if not self.check_connectivity():
-                    self.restore_connectivity()
-                    st.write(f"Restored connectivity at iteration {iteration}")
+            # Calculate cost (less frequently)
+            if iteration % 10 == 0:
+                cost = self.calculate_network_cost()
+                costs.append(cost)
 
-            # Calculate and track cost
-            cost = self.calculate_network_cost()
-            costs.append(cost)
+                # Check for improvement
+                rel_improvement = (previous_cost - cost) / previous_cost if previous_cost != float('inf') else 1.0
 
-            # Update best solution
-            if cost < best_cost:
-                best_cost = cost
-                best_conductivity = self.conductivity.copy()
-                stagnation_counter = 0
-            else:
-                stagnation_counter += 1
+                if cost < best_cost:
+                    best_cost = cost
+                    stagnation_count = 0
+                    if rel_improvement < self.params.min_improvement:
+                        stagnation_count += 1
+                else:
+                    stagnation_count += 1
 
-            # Log progress periodically
-            if iteration % 100 == 0:
-                st.write(f"Iteration {iteration}: Cost = {cost:.2f}, "
-                        f"Max change = {max_change:.6f}")
+                previous_cost = cost
 
-            # Check convergence
-            if max_change < self.params.convergence_threshold or stagnation_counter > 50:
+                # Log only significant changes
+                if iteration == 0 or rel_improvement > 0.01:
+                    st.write(f"Iteration {iteration}: Cost = {cost:.2f}")
+
+            # Early stopping checks
+            if max_change < self.params.convergence_threshold:
                 st.write(f"Converged after {iteration} iterations")
                 break
 
-        return best_conductivity, costs
+            if stagnation_count >= self.params.stagnation_limit:
+                st.write(f"Stopping due to stagnation after {iteration} iterations")
+                break
+
+        # Convert final conductivity to dictionary format
+        rows, cols = self.conductivity_matrix.nonzero()
+        conductivities = {(int(i), int(j)): float(self.conductivity_matrix[i,j])
+                         for i, j in zip(rows, cols)}
+
+        return conductivities, costs
 
 def create_random_points(n_points: int, 
                        size: float = 100.0) -> np.ndarray:

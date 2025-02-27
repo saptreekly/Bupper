@@ -5,158 +5,9 @@ import math
 from utils import TimeWindow
 import time
 from dataclasses import dataclass
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-def verify_and_fix_routes(routes: List[List[int]], 
-                         n_points: int,
-                         distances: np.ndarray,
-                         demands: List[float],
-                         capacity: float,
-                         time_windows: Optional[Dict[int, TimeWindow]] = None,
-                         speed: float = 1.0,
-                         max_repair_iterations: int = 5,
-                         cost_increase_threshold: float = 0.2,
-                         time_penalty_multiplier: float = 3.0) -> List[List[int]]:
-    """
-    Verify all nodes are included in routes and fix any missing nodes.
-    Args:
-        routes: List of vehicle routes
-        n_points: Total number of points including depot
-        distances: Distance matrix
-        demands: List of demands for each node
-        capacity: Vehicle capacity
-        time_windows: Optional time window constraints
-        speed: Travel speed
-        max_repair_iterations: Maximum number of repair attempts before early stopping
-        cost_increase_threshold: Maximum allowed proportional cost increase for insertions
-        time_penalty_multiplier: Penalty factor for time window violations
-    """
-    import streamlit as st
-
-    # Remove duplicate depot entries (keep only start/end)
-    for i, route in enumerate(routes):
-        if not route:
-            continue
-        cleaned_route = [node for j, node in enumerate(route) 
-                        if node != 0 or j == 0 or j == len(route)-1]
-        if cleaned_route[0] != 0:
-            cleaned_route.insert(0, 0)
-        if cleaned_route[-1] != 0:
-            cleaned_route.append(0)
-        routes[i] = cleaned_route
-
-    # Count node occurrences
-    node_counts = {i: 0 for i in range(1, n_points)}  # Exclude depot
-    for route in routes:
-        for node in route[1:-1]:  # Skip depot at start/end
-            node_counts[node] = node_counts.get(node, 0) + 1
-
-    # Find missing and duplicate nodes
-    missing_nodes = [node for node, count in node_counts.items() if count == 0]
-    duplicate_nodes = [node for node, count in node_counts.items() if count > 1]
-
-    if missing_nodes or duplicate_nodes:
-        st.write(f"Found {len(missing_nodes)} missing and {len(duplicate_nodes)} duplicate nodes")
-
-    # Remove duplicate nodes (keep first occurrence)
-    if duplicate_nodes:
-        for node in duplicate_nodes:
-            found_first = False
-            for route in routes:
-                if node in route:
-                    if found_first:
-                        route.remove(node)
-                    else:
-                        found_first = True
-
-    # Calculate initial total cost
-    def calculate_route_cost(route: List[int], with_penalties: bool = True) -> float:
-        cost = sum(distances[route[i]][route[i+1]] for i in range(len(route)-1))
-        if with_penalties and time_windows:
-            current_time = 0.0
-            for i in range(len(route)):
-                if i > 0:
-                    current_time += distances[route[i-1]][route[i]] / speed
-                if route[i] in time_windows:
-                    tw = time_windows[route[i]]
-                    if current_time < tw.earliest:
-                        current_time = tw.earliest
-                    elif current_time > tw.latest:
-                        cost += (current_time - tw.latest) * time_penalty_multiplier
-                    current_time += tw.service_time
-        return cost
-
-    initial_total_cost = sum(calculate_route_cost(route) for route in routes)
-
-    # Try to insert missing nodes
-    for node in missing_nodes:
-        best_route_idx = -1
-        best_position = -1
-        min_cost_increase = float('inf')
-        no_improvement_count = 0
-
-        while no_improvement_count < max_repair_iterations:
-            found_improvement = False
-
-            # Try inserting into each route
-            for route_idx, route in enumerate(routes):
-                if len(route) <= 2:  # Skip empty routes
-                    continue
-
-                # Check capacity
-                route_demand = sum(demands[i] for i in route[1:-1])
-                if route_demand + demands[node] > capacity * 1.1:  # Allow 10% overflow
-                    continue
-
-                # Try each insertion position
-                old_route_cost = calculate_route_cost(route)
-                for pos in range(1, len(route)):
-                    new_route = route[:pos] + [node] + route[pos:]
-                    new_route_cost = calculate_route_cost(new_route)
-                    cost_increase = new_route_cost - old_route_cost
-
-                    # Only accept if cost increase is reasonable
-                    if cost_increase < min_cost_increase and cost_increase/old_route_cost <= cost_increase_threshold:
-                        min_cost_increase = cost_increase
-                        best_route_idx = route_idx
-                        best_position = pos
-                        found_improvement = True
-
-            if found_improvement:
-                no_improvement_count = 0
-            else:
-                no_improvement_count += 1
-
-            # Early stopping if no improvements found
-            if no_improvement_count >= max_repair_iterations:
-                break
-
-        # Insert node at best position if found
-        if best_route_idx >= 0:
-            route = routes[best_route_idx]
-            routes[best_route_idx] = route[:best_position] + [node] + route[best_position:]
-        else:
-            # Create new route as last resort
-            if demands[node] <= capacity:
-                new_route = [0, node, 0]
-                routes.append(new_route)
-
-    # Final verification and cost comparison
-    final_total_cost = sum(calculate_route_cost(route) for route in routes)
-    final_counts = {i: sum(1 for route in routes for n in route[1:-1] if n == i) 
-                   for i in range(1, n_points)}
-
-    remaining_issues = [node for node, count in final_counts.items() if count != 1]
-    if remaining_issues:
-        st.error(f"Warning: {len(remaining_issues)} nodes have incorrect counts")
-    else:
-        cost_change = ((final_total_cost - initial_total_cost) / initial_total_cost) * 100
-        if cost_change > 0:
-            st.warning(f"Solution cost increased by {cost_change:.1f}% during repair")
-        else:
-            st.success("All nodes verified with no cost increase")
-
-    return routes
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from scipy.sparse import csr_matrix
+import numpy.ma as ma
 
 @dataclass
 class SolutionMetrics:
@@ -168,7 +19,7 @@ class SolutionMetrics:
     improvement_rate: float
 
 class ACO:
-    """Ant Colony Optimization with soft constraints and dynamic pheromone initialization"""
+    """Ant Colony Optimization with parallel processing and vectorized operations"""
 
     def __init__(self, 
                  base_ants: int = 40,
@@ -184,7 +35,6 @@ class ACO:
                  lateness_multiplier: float = 1.5,
                  max_parallel_ants: int = 8,
                  verbose: bool = False):
-        # Keep existing initialization parameters
         self.base_ants = base_ants
         self.base_evaporation = base_evaporation
         self.alpha = alpha
@@ -204,32 +54,209 @@ class ACO:
         self.last_improvement_iteration = 0
         self.best_solution_history = []
 
-    def log(self, message: str, force: bool = False) -> None:
-        """Conditional logging based on verbosity"""
-        if self.VERBOSE or force:
-            import streamlit as st
-            st.write(message)
+        # Precomputed data structures
+        self.nearest_neighbors = None
+        self.distance_matrix = None
 
-    def calculate_distances(self, points: np.ndarray) -> np.ndarray:
-        """Calculate distance matrix using vectorized operations."""
-        # Vectorized Euclidean distance calculation
-        diff = points[:, np.newaxis, :] - points[np.newaxis, :, :]
-        return np.sqrt(np.sum(diff * diff, axis=-1))
+    def precompute_nearest_neighbors(self, points: np.ndarray) -> None:
+        """Precompute and store sorted nearest neighbors for each node"""
+        n_points = len(points)
+        self.distance_matrix = np.sqrt(np.sum((points[:, np.newaxis, :] - 
+                                             points[np.newaxis, :, :]) ** 2, axis=2))
+        # Mask diagonal to exclude self-distances
+        masked_distances = ma.masked_array(self.distance_matrix, 
+                                        mask=np.eye(n_points, dtype=bool))
+        # Get sorted indices for each node
+        self.nearest_neighbors = np.argsort(masked_distances, axis=1)
 
     def initialize_pheromone(self, n_points: int, conductivities: Optional[Dict] = None) -> np.ndarray:
-        """Initialize pheromone matrix using Physarum conductivities if available"""
+        """Initialize pheromone matrix using conductivities if available"""
         pheromone = np.ones((n_points, n_points)) * self.q0
 
         if conductivities:
-            # Scale conductivities to pheromone values
+            # Vectorized initialization from conductivities
             max_cond = max(conductivities.values())
             for (i, j), cond in conductivities.items():
-                # Higher conductivity = higher initial pheromone
                 scaled_pheromone = (cond / max_cond) * (1.0 - self.q0) + self.q0
                 pheromone[i, j] = scaled_pheromone
                 pheromone[j, i] = scaled_pheromone
 
         return pheromone
+
+    def construct_solution_parallel(self, args: Tuple) -> List[int]:
+        """Construct a single ant's solution (used in parallel processing)"""
+        points, pheromone, route_nodes = args
+        unvisited = set(route_nodes[1:])
+        current = 0
+        path = [current]
+
+        while unvisited:
+            # Use precomputed nearest neighbors
+            neighbors = self.nearest_neighbors[current]
+            valid_neighbors = [n for n in neighbors if n in unvisited]
+
+            if not valid_neighbors:
+                break
+
+            # Calculate move probabilities vectorized
+            pher_values = pheromone[current, valid_neighbors] ** self.alpha
+            dist_values = (1.0 / np.maximum(self.distance_matrix[current, valid_neighbors], 1e-6)) ** self.beta
+            probs = pher_values * dist_values
+
+            # Normalize probabilities
+            total = np.sum(probs)
+            if total == 0 or not np.isfinite(total):
+                probs = np.ones_like(probs) / len(probs)
+            else:
+                probs = probs / total
+
+            # Select next city
+            next_city = np.random.choice(valid_neighbors, p=probs)
+            path.append(next_city)
+            unvisited.remove(next_city)
+            current = next_city
+
+        path.append(0)
+        return path
+
+    def update_pheromone_vectorized(self,
+                                  pheromone: np.ndarray,
+                                  all_paths: List[List[int]],
+                                  all_costs: List[float]) -> np.ndarray:
+        """Update pheromone levels using vectorized operations"""
+        # Global evaporation
+        pheromone *= (1.0 - self.base_evaporation)
+
+        # Calculate deposits
+        deposits = 1.0 / (np.array(all_costs) + 1e-10)
+
+        # Update pheromone matrix efficiently
+        for path, deposit in zip(all_paths, deposits):
+            path_array = np.array(path)
+            # Use advanced indexing for efficient updates
+            idx_from = path_array[:-1]
+            idx_to = path_array[1:]
+            pheromone[idx_from, idx_to] += deposit
+            pheromone[idx_to, idx_from] += deposit  # Symmetric update
+
+        return pheromone
+
+    def solve(self,
+             points: np.ndarray,
+             route_nodes: List[int],
+             n_iterations: int = 100,
+             time_windows: Optional[Dict[int, TimeWindow]] = None,
+             conductivities: Optional[Dict] = None,
+             demands: Optional[List[float]] = None,
+             capacity: Optional[float] = None) -> Tuple[List[int], float, Dict[int, float]]:
+        """Solve TSP/VRP with vectorized operations and parallel processing"""
+        import streamlit as st
+
+        st.write("\n=== ACO Solver Starting ===")
+        st.write(f"Number of points: {len(points)}")
+
+        # Precompute nearest neighbors
+        self.precompute_nearest_neighbors(points)
+
+        # Initialize pheromone matrix
+        n_points = len(points)
+        pheromone = self.initialize_pheromone(n_points, conductivities)
+
+        # Calculate dynamic number of ants based on problem size
+        self.n_ants = min(
+            int(self.base_ants * np.log2(n_points / 10 + 1)),
+            200  # Maximum ants cap
+        )
+
+        best_path = None
+        best_cost = float('inf')
+        best_arrival_times = {}
+        previous_best_cost = float('inf')
+        stagnation_counter = 0
+
+        # Determine optimal chunk size for parallel processing
+        chunk_size = max(1, min(self.n_ants // (self.max_parallel_ants * 2), 20))
+
+        for iteration in range(n_iterations):
+            iteration_start = time.time()
+
+            # Parallel solution construction
+            executor_class = ProcessPoolExecutor if self.n_ants > 50 else ProcessPoolExecutor
+            with executor_class(max_workers=self.max_parallel_ants) as executor:
+                # Prepare arguments for parallel processing
+                args_list = [(points, pheromone, route_nodes)] * self.n_ants
+
+                # Submit tasks in chunks
+                futures = []
+                for i in range(0, self.n_ants, chunk_size):
+                    chunk_args = args_list[i:i + chunk_size]
+                    futures.extend([executor.submit(self.construct_solution_parallel, args) 
+                                 for args in chunk_args])
+
+                all_paths = []
+                all_costs = []
+                all_arrival_times = []
+
+                for future in as_completed(futures):
+                    try:
+                        path = future.result()
+                        arrival_times = self.calculate_arrival_times(path, self.distance_matrix, time_windows)
+                        base_cost = np.sum([self.distance_matrix[path[i]][path[i+1]] 
+                                          for i in range(len(path)-1)])
+
+                        # Apply penalties if constraints are enabled
+                        penalty = 0.0
+                        if time_windows:
+                            for node, arrival in arrival_times.items():
+                                if node in time_windows:
+                                    tw = time_windows[node]
+                                    if arrival > tw.latest:
+                                        penalty += (arrival - tw.latest) * self.time_penalty_factor
+
+                        if demands is not None and capacity is not None:
+                            route_demand = sum(demands[i] for i in path[1:-1])
+                            if route_demand > capacity:
+                                penalty += (route_demand - capacity) * self.base_time_penalty
+
+                        total_cost = base_cost + penalty
+
+                        all_paths.append(path)
+                        all_costs.append(total_cost)
+                        all_arrival_times.append(arrival_times)
+
+                    except Exception as e:
+                        st.write(f"Error in ant construction: {str(e)}")
+                        continue
+
+            if all_costs:
+                min_cost_idx = np.argmin(all_costs)
+                if all_costs[min_cost_idx] < best_cost:
+                    best_path = all_paths[min_cost_idx]
+                    best_cost = all_costs[min_cost_idx]
+                    best_arrival_times = all_arrival_times[min_cost_idx]
+                    stagnation_counter = 0
+
+                    improvement = ((previous_best_cost - best_cost) / previous_best_cost 
+                                if previous_best_cost != float('inf') else 1.0)
+                    if improvement > 0.05:  # Log only significant improvements
+                        st.write(f"Cost improved by {improvement*100:.1f}%")
+                else:
+                    stagnation_counter += 1
+
+                previous_best_cost = best_cost
+
+                # Update pheromones using vectorized operations
+                pheromone = self.update_pheromone_vectorized(pheromone, all_paths, all_costs)
+
+            # Adapt parameters
+            self.adapt_parameters(iteration, best_cost, previous_best_cost, len(points))
+
+            # Early stopping check
+            if stagnation_counter >= self.stagnation_limit:
+                st.write(f"Stopping early due to stagnation at iteration {iteration}")
+                break
+
+        return best_path, best_cost, best_arrival_times
 
     def calculate_time_window_penalty(self,
                                    arrival_time: float,
@@ -463,56 +490,6 @@ class ACO:
         return arrival_times
 
 
-    def construct_solution(self, 
-                     route_nodes: List[int],
-                     distances: np.ndarray,
-                     pheromone: np.ndarray) -> List[int]:
-        """Construct a single ant's solution with minimal logging."""
-        unvisited = set(route_nodes[1:])  # Skip depot
-        current = 0  # Start at depot
-        path = [current]
-
-        while unvisited:
-            moves = []
-            probs = []
-
-            for j in unvisited:
-                # Calculate move probability components
-                pheromone_value = pheromone[current][j] ** self.alpha
-                distance_value = max(distances[current][j], 1e-6)  # Avoid division by zero
-                distance_factor = (1.0 / distance_value) ** self.beta
-                prob = pheromone_value * distance_factor
-
-                # Handle non-finite probabilities
-                if not np.isfinite(prob) or np.isnan(prob):
-                    prob = 1e-6
-
-                moves.append(j)
-                probs.append(prob)
-
-            # Normalize probabilities
-            total = sum(probs)
-            if total == 0 or not np.isfinite(total):
-                normalized_probs = [1.0 / len(probs)] * len(probs)
-            else:
-                normalized_probs = [max(1e-6, p/total) for p in probs]
-                # Renormalize if needed
-                total = sum(normalized_probs)
-                normalized_probs = [p/total for p in normalized_probs]
-
-            # Select next city
-            selected_idx = random.choices(
-                population=range(len(moves)),
-                weights=normalized_probs
-            )[0]
-            next_city = moves[selected_idx]
-            path.append(next_city)
-            unvisited.remove(next_city)
-            current = next_city
-
-        path.append(0)  # Return to depot
-        return path
-
     def calculate_total_cost(self,
                            path: List[int],
                            distances: np.ndarray,
@@ -559,113 +536,427 @@ class ACO:
 
         return pheromone
 
-    def solve(self,
-             points: np.ndarray,
-             route_nodes: List[int],
-             n_iterations: int = 100,
-             time_windows: Optional[Dict[int, TimeWindow]] = None,
-             conductivities: Optional[Dict] = None,
-             demands: Optional[List[float]] = None,
-             capacity: Optional[float] = None) -> Tuple[List[int], float, Dict[int, float]]:
+    def log(self, message: str, force: bool = False) -> None:
+        """Conditional logging based on verbosity"""
+        if self.VERBOSE or force:
+            import streamlit as st
+            st.write(message)
+
+    def verify_and_fix_routes(self, routes: List[List[int]], 
+                         n_points: int,
+                         distances: np.ndarray,
+                         demands: List[float],
+                         capacity: float,
+                         time_windows: Optional[Dict[int, TimeWindow]] = None,
+                         speed: float = 1.0,
+                         max_repair_iterations: int = 5,
+                         cost_increase_threshold: float = 0.2,
+                         time_penalty_multiplier: float = 3.0) -> List[List[int]]:
         """
-        Solve TSP/VRP with optional constraints and Physarum integration
+        Verify all nodes are included in routes and fix any missing nodes.
+        Args:
+            routes: List of vehicle routes
+            n_points: Total number of points including depot
+            distances: Distance matrix
+            demands: List of demands for each node
+            capacity: Vehicle capacity
+            time_windows: Optional time window constraints
+            speed: Travel speed
+            max_repair_iterations: Maximum number of repair attempts before early stopping
+            cost_increase_threshold: Maximum allowed proportional cost increase for insertions
+            time_penalty_multiplier: Penalty factor for time window violations
         """
         import streamlit as st
 
-        st.write("\n=== ACO Solver Starting ===")
-        st.write(f"Initial route nodes: {route_nodes}")
-        delivery_nodes = set(route_nodes[1:])
-        st.write(f"Number of delivery points: {len(delivery_nodes)}")
+        # Remove duplicate depot entries (keep only start/end)
+        for i, route in enumerate(routes):
+            if not route:
+                continue
+            cleaned_route = [node for j, node in enumerate(route) 
+                            if node != 0 or j == 0 or j == len(route)-1]
+            if cleaned_route[0] != 0:
+                cleaned_route.insert(0, 0)
+            if cleaned_route[-1] != 0:
+                cleaned_route.append(0)
+            routes[i] = cleaned_route
 
-        start_time = time.time()
-        distances = self.calculate_distances(points)
-        n_points = len(points)
-        self.n_ants = int(math.log2(n_points) * self.base_ants)
+        # Count node occurrences
+        node_counts = {i: 0 for i in range(1, n_points)}  # Exclude depot
+        for route in routes:
+            for node in route[1:-1]:  # Skip depot at start/end
+                node_counts[node] = node_counts.get(node, 0) + 1
 
-        # Initialize pheromone using conductivities if available
-        pheromone = self.initialize_pheromone(n_points, conductivities)
+        # Find missing and duplicate nodes
+        missing_nodes = [node for node, count in node_counts.items() if count == 0]
+        duplicate_nodes = [node for node, count in node_counts.items() if count > 1]
 
-        # Store constraints if provided
-        self.demands = demands
-        self.capacity = capacity
+        if missing_nodes or duplicate_nodes:
+            st.write(f"Found {len(missing_nodes)} missing and {len(duplicate_nodes)} duplicate nodes")
 
-        best_path = None
-        best_cost = float('inf')
-        best_arrival_times = {}
-        previous_best_cost = float('inf')
+        # Remove duplicate nodes (keep first occurrence)
+        if duplicate_nodes:
+            for node in duplicate_nodes:
+                found_first = False
+                for route in routes:
+                    if node in route:
+                        if found_first:
+                            route.remove(node)
+                        else:
+                            found_first = True
 
-        for iteration in range(n_iterations):
-            iteration_start = time.time()
+        # Calculate initial total cost
+        def calculate_route_cost(route: List[int], with_penalties: bool = True) -> float:
+            cost = sum(distances[route[i]][route[i+1]] for i in range(len(route)-1))
+            if with_penalties and time_windows:
+                current_time = 0.0
+                for i in range(len(route)):
+                    if i > 0:
+                        current_time += distances[route[i-1]][route[i]] / speed
+                    if route[i] in time_windows:
+                        tw = time_windows[route[i]]
+                        if current_time < tw.earliest:
+                            current_time = tw.earliest
+                        elif current_time > tw.latest:
+                            cost += (current_time - tw.latest) * time_penalty_multiplier
+                        current_time += tw.service_time
+            return cost
 
-            # Parallel ant solution construction
-            with ThreadPoolExecutor(max_workers=self.max_parallel_ants) as executor:
-                future_to_ant = {
-                    executor.submit(
-                        self.construct_solution, route_nodes, distances, pheromone
-                    ): i for i in range(self.n_ants)
-                }
+        initial_total_cost = sum(calculate_route_cost(route) for route in routes)
 
-                all_paths = []
-                all_costs = []
-                all_arrival_times = []
+        # Try to insert missing nodes
+        for node in missing_nodes:
+            best_route_idx = -1
+            best_position = -1
+            min_cost_increase = float('inf')
+            no_improvement_count = 0
 
-                for future in as_completed(future_to_ant):
-                    try:
-                        path = future.result()
-                        arrival_times = self.calculate_arrival_times(path, distances, time_windows)
+            while no_improvement_count < max_repair_iterations:
+                found_improvement = False
 
-                        # Calculate total cost with soft constraints
-                        base_cost = sum(distances[path[i]][path[i+1]] for i in range(len(path)-1))
-
-                        # Add soft penalties for constraint violations
-                        penalty = 0.0
-
-                        # Time window penalties if enabled
-                        if time_windows:
-                            for node, arrival in arrival_times.items():
-                                if node in time_windows:
-                                    tw = time_windows[node]
-                                    if arrival > tw.latest:
-                                        delay = arrival - tw.latest
-                                        penalty += delay * self.time_penalty_factor
-
-                        # Capacity penalties if enabled
-                        if demands is not None and capacity is not None:
-                            route_demand = sum(demands[i] for i in path[1:-1])
-                            if route_demand > capacity:
-                                excess = route_demand - capacity
-                                penalty += excess * self.base_time_penalty
-
-                        total_cost = base_cost + penalty
-
-                        all_paths.append(path)
-                        all_costs.append(total_cost)
-                        all_arrival_times.append(arrival_times)
-
-                    except Exception as e:
-                        st.write(f"Error in ant construction: {str(e)}")
+                # Try inserting into each route
+                for route_idx, route in enumerate(routes):
+                    if len(route) <= 2:  # Skip empty routes
                         continue
 
-                if all_costs:
-                    min_cost_idx = np.argmin(all_costs)
-                    if all_costs[min_cost_idx] < best_cost:
-                        best_path = all_paths[min_cost_idx]
-                        best_cost = all_costs[min_cost_idx]
-                        best_arrival_times = all_arrival_times[min_cost_idx]
+                    # Check capacity
+                    route_demand = sum(demands[i] for i in route[1:-1])
+                    if route_demand + demands[node] > capacity * 1.1:  # Allow 10% overflow
+                        continue
 
-                        improvement = ((previous_best_cost - best_cost) / previous_best_cost 
-                                    if previous_best_cost != float('inf') else 1.0)
-                        if improvement > 0.05:
-                            st.write(f"Cost improved by {improvement*100:.1f}%")
+                    # Try each insertion position
+                    old_route_cost = calculate_route_cost(route)
+                    for pos in range(1, len(route)):
+                        new_route = route[:pos] + [node] + route[pos:]
+                        new_route_cost = calculate_route_cost(new_route)
+                        cost_increase = new_route_cost - old_route_cost
 
-                    previous_best_cost = best_cost
+                        # Only accept if cost increase is reasonable
+                        if cost_increase < min_cost_increase and cost_increase/old_route_cost <= cost_increase_threshold:
+                            min_cost_increase = cost_increase
+                            best_route_idx = route_idx
+                            best_position = pos
+                            found_improvement = True
 
-                    # Update pheromones with stronger reinforcement for better paths
-                    pheromone = self.update_pheromone(
-                        pheromone, all_paths, all_costs, 
-                        self.base_evaporation
-                    )
+                if found_improvement:
+                    no_improvement_count = 0
+                else:
+                    no_improvement_count += 1
 
-            self.adapt_parameters(iteration, best_cost, previous_best_cost, len(points))
+                # Early stopping if no improvements found
+                if no_improvement_count >= max_repair_iterations:
+                    break
 
-        return best_path, best_cost, best_arrival_times
+            # Insert node at best position if found
+            if best_route_idx >= 0:
+                route = routes[best_route_idx]
+                routes[best_route_idx] = route[:best_position] + [node] + route[best_position:]
+            else:
+                # Create new route as last resort
+                if demands[node] <= capacity:
+                    new_route = [0, node, 0]
+                    routes.append(new_route)
+
+        # Final verification and cost comparison
+        final_total_cost = sum(calculate_route_cost(route) for route in routes)
+        final_counts = {i: sum(1 for route in routes for n in route[1:-1] if n == i) 
+                       for i in range(1, n_points)}
+
+        remaining_issues = [node for node, count in final_counts.items() if count != 1]
+        if remaining_issues:
+            st.error(f"Warning: {len(remaining_issues)} nodes have incorrect counts")
+        else:
+            cost_change = ((final_total_cost - initial_total_cost) / initial_total_cost) * 100
+            if cost_change > 0:
+                st.warning(f"Solution cost increased by {cost_change:.1f}% during repair")
+            else:
+                st.success("All nodes verified with no cost increase")
+
+        return routes
+
+def verify_and_fix_routes(routes: List[List[int]], 
+                         n_points: int,
+                         distances: np.ndarray,
+                         demands: List[float],
+                         capacity: float,
+                         time_windows: Optional[Dict[int, TimeWindow]] = None,
+                         speed: float = 1.0,
+                         max_repair_iterations: int = 5,
+                         cost_increase_threshold: float = 0.2,
+                         time_penalty_multiplier: float = 3.0) -> List[List[int]]:
+    """
+    Verify all nodes are included in routes and fix any missing nodes.
+    Args:
+        routes: List of vehicle routes
+        n_points: Total number of points including depot
+        distances: Distance matrix
+        demands: List of demands for each node
+        capacity: Vehicle capacity
+        time_windows: Optional time window constraints
+        speed: Travel speed
+        max_repair_iterations: Maximum number of repair attempts before early stopping
+        cost_increase_threshold: Maximum allowed proportional cost increase for insertions
+        time_penalty_multiplier: Penalty factor for time window violations
+    """
+    import streamlit as st
+
+    # Remove duplicate depot entries (keep only start/end)
+    for i, route in enumerate(routes):
+        if not route:
+            continue
+        cleaned_route = [node for j, node in enumerate(route) 
+                        if node != 0 or j == 0 or j == len(route)-1]
+        if cleaned_route[0] != 0:
+            cleaned_route.insert(0, 0)
+        if cleaned_route[-1] != 0:
+            cleaned_route.append(0)
+        routes[i] = cleaned_route
+
+    # Count node occurrences
+    node_counts = {i: 0 for i in range(1, n_points)}  # Exclude depot
+    for route in routes:
+        for node in route[1:-1]:  # Skip depot at start/end
+            node_counts[node] = node_counts.get(node, 0) + 1
+
+    # Find missing and duplicate nodes
+    missing_nodes = [node for node, count in node_counts.items() if count == 0]
+    duplicate_nodes = [node for node, count in node_counts.items() if count > 1]
+
+    if missing_nodes or duplicate_nodes:
+        st.write(f"Found {len(missing_nodes)} missing and {len(duplicate_nodes)} duplicate nodes")
+
+    # Remove duplicate nodes (keep first occurrence)
+    if duplicate_nodes:
+        for node in duplicate_nodes:
+            found_first = False
+            for route in routes:
+                if node in route:
+                    if found_first:
+                        route.remove(node)
+                    else:
+                        found_first = True
+
+    # Calculate initial total cost
+    def calculate_route_cost(route: List[int], with_penalties: bool = True) -> float:
+        cost = sum(distances[route[i]][route[i+1]] for i in range(len(route)-1))
+        if with_penalties and time_windows:
+            current_time = 0.0
+            for i in range(len(route)):
+                if i > 0:
+                    current_time += distances[route[i-1]][route[i]] / speed
+                if route[i] in time_windows:
+                    tw = time_windows[route[i]]
+                    if current_time < tw.earliest:
+                        current_time = tw.earliest
+                    elif current_time > tw.latest:
+                        cost += (currenttime - tw.latest) * time_penalty_multiplier
+                        current_time += tw.service_time
+        return cost
+
+    initial_total_cost = sum(calculate_route_cost(route) for route in routes)
+
+    # Try to insert missing nodes
+    for node in missing_nodes:
+        best_route_idx = -1
+        best_position = -1
+        min_cost_increase = float('inf')
+        no_improvement_count = 0
+
+        while no_improvement_count < max_repair_iterations:
+            found_improvement = False
+
+            # Try inserting into each route
+            for route_idx, route in enumerate(routes):
+                if len(route) <= 2:  # Skip empty routes
+                    continue
+
+                # Check capacity
+                route_demand = sum(demands[i] for i in route[1:-1])
+                if route_demand + demands[node] > capacity * 1.1:  # Allow 10% overflow
+                    continue
+
+                # Try each insertion position
+                old_route_cost = calculate_route_cost(route)
+                for pos in range(1, len(route)):
+                    new_route = route[:pos] + [node] + route[pos:]
+                    new_route_cost = calculate_route_cost(new_route)
+                    cost_increase = new_route_cost - old_route_cost
+
+                    # Only accept if cost increase is reasonable
+                    if cost_increase < min_cost_increase and cost_increase/old_route_cost <= cost_increase_threshold:
+                        min_cost_increase = cost_increase
+                        best_route_idx = route_idx
+                        best_position = pos
+                        found_improvement = True
+
+            if found_improvement:
+                no_improvement_count = 0
+            else:
+                no_improvement_count += 1
+
+            # Early stopping if no improvements found
+            if no_improvement_count >= max_repair_iterations:
+                break
+
+        # Insert node at best position if found
+        if best_route_idx >= 0:
+            route = routes[best_route_idx]
+            routes[best_route_idx] = route[:best_position] + [node] + route[best_position:]
+        else:
+            # Create new route as last resort
+            if demands[node] <= capacity:
+                new_route = [0, node, 0]
+                routes.append(new_route)
+
+    # Final verification and cost comparison
+    final_total_cost = sum(calculate_route_cost(route) for route in routes)
+    final_counts = {i: sum(1 for route in routes for n in route[1:-1] if n == i) 
+                   for i in range(1, n_points)}
+
+    remaining_issues = [node for node, count in final_counts.items() if count != 1]
+    if remaining_issues:
+        st.error(f"Warning: {len(remaining_issues)} nodes have incorrect counts")
+    else:
+        cost_change = ((final_total_cost - initial_total_cost) / initial_total_cost) * 100
+        if cost_change > 0:
+            st.warning(f"Solution cost increased by {cost_change:.1f}% during repair")
+        else:
+            st.success("All nodes verified with no cost increase")
+
+    return routes
+
+def solve(self,
+         points: np.ndarray,
+         route_nodes: List[int],
+         n_iterations: int = 100,
+         time_windows: Optional[Dict[int, TimeWindow]] = None,
+         conductivities: Optional[Dict] = None,
+         demands: Optional[List[float]] = None,
+         capacity: Optional[float] = None) -> Tuple[List[int], float, Dict[int, float]]:
+    """Solve TSP/VRP with vectorized operations and parallel processing"""
+    import streamlit as st
+
+    st.write("\n=== ACO Solver Starting ===")
+    st.write(f"Number of points: {len(points)}")
+
+    # Precompute nearest neighbors
+    self.precompute_nearest_neighbors(points)
+
+    # Initialize pheromone matrix
+    n_points = len(points)
+    pheromone = self.initialize_pheromone(n_points, conductivities)
+
+    # Calculate dynamic number of ants based on problem size
+    self.n_ants = min(
+        int(self.base_ants * np.log2(n_points / 10 + 1)),
+        200  # Maximum ants cap
+    )
+
+    best_path = None
+    best_cost = float('inf')
+    best_arrival_times = {}
+    previous_best_cost = float('inf')
+    stagnation_counter = 0
+
+    # Determine optimal chunk size for parallel processing
+    chunk_size = max(1, min(self.n_ants // (self.max_parallel_ants * 2), 20))
+
+    for iteration in range(n_iterations):
+        iteration_start = time.time()
+
+        # Parallel solution construction
+        executor_class = ProcessPoolExecutor if self.n_ants > 50 else ProcessPoolExecutor
+        with executor_class(max_workers=self.max_parallel_ants) as executor:
+            # Prepare arguments for parallel processing
+            args_list = [(points, pheromone, route_nodes)] * self.n_ants
+
+            # Submit tasks in chunks
+            futures = []
+            for i in range(0, self.n_ants, chunk_size):
+                chunk_args = args_list[i:i + chunk_size]
+                futures.extend([executor.submit(self.construct_solution_parallel, args) 
+                             for args in chunk_args])
+
+            all_paths = []
+            all_costs = []
+            all_arrival_times = []
+
+            for future in as_completed(futures):
+                try:
+                    path = future.result()
+                    arrival_times = self.calculate_arrival_times(path, self.distance_matrix, time_windows)
+                    base_cost = np.sum([self.distance_matrix[path[i]][path[i+1]] 
+                                      for i in range(len(path)-1)])
+
+                    # Apply penalties if constraints are enabled
+                    penalty = 0.0
+                    if time_windows:
+                        for node, arrival in arrival_times.items():
+                            if node in time_windows:
+                                tw = time_windows[node]
+                                if arrival > tw.latest:
+                                    penalty += (arrival - tw.latest) * self.time_penalty_factor
+
+                    if demands is not None and capacity is not None:
+                        route_demand = sum(demands[i] for i in path[1:-1])
+                        if route_demand > capacity:
+                            penalty += (route_demand - capacity) * self.base_time_penalty
+
+                    total_cost = base_cost + penalty
+
+                    all_paths.append(path)
+                    all_costs.append(total_cost)
+                    all_arrival_times.append(arrival_times)
+
+                except Exception as e:
+                    st.write(f"Error in ant construction: {str(e)}")
+                    continue
+
+        if all_costs:
+            min_cost_idx = np.argmin(all_costs)
+            if all_costs[min_cost_idx] < best_cost:
+                best_path = all_paths[min_cost_idx]
+                best_cost = all_costs[min_cost_idx]
+                best_arrival_times = all_arrival_times[min_cost_idx]
+                stagnation_counter = 0
+
+                improvement = ((previous_best_cost - best_cost) / previous_best_cost 
+                            if previous_best_cost != float('inf') else 1.0)
+                if improvement > 0.05:  # Log only significant improvements
+                    st.write(f"Cost improved by {improvement*100:.1f}%")
+            else:
+                stagnation_counter += 1
+
+            previous_best_cost = best_cost
+
+            # Update pheromones using vectorized operations
+            pheromone = self.update_pheromone_vectorized(pheromone, all_paths, all_costs)
+
+        # Adapt parameters
+        self.adapt_parameters(iteration, best_cost, previous_best_cost, len(points))
+
+        # Early stopping check
+        if stagnation_counter >= self.stagnation_limit:
+            st.write(f"Stopping early due to stagnation at iteration {iteration}")
+            break
+
+    return best_path, best_cost, best_arrival_times
