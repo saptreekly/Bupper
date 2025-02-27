@@ -16,6 +16,9 @@ class PhysarumParams:
     convergence_threshold: float = 1e-6
     min_conductivity: float = 0.01  # Minimum conductivity threshold
     connectivity_check_interval: int = 50  # Check connectivity every N iterations
+    k_neighbors: int = 5  # Number of nearest neighbors for initial connectivity
+    weak_flow_threshold: float = 0.1  # Threshold for identifying weak flows
+    decay_multiplier: float = 1.5  # Increased decay rate for weak connections
 
 class PhysarumSolver:
     """Physarum-inspired network optimizer"""
@@ -32,15 +35,27 @@ class PhysarumSolver:
         self.time_windows = time_windows
         self.speed = speed
 
-        # Initialize graph and edge properties
-        self.G = nx.complete_graph(self.n_points)
+        # Initialize graph with k-nearest neighbors
+        self.G = nx.Graph()
         self.pos = {i: points[i] for i in range(self.n_points)}
 
-        # Calculate edge lengths and initialize conductivities
+        # Calculate all pairwise distances
+        distances = np.array([[np.sqrt(np.sum((p1 - p2) ** 2))
+                             for p2 in points]
+                             for p1 in points])
+
+        # Connect each node to its k nearest neighbors
+        for i in range(self.n_points):
+            # Get indices of k nearest neighbors (excluding self)
+            nearest = np.argsort(distances[i])[1:self.params.k_neighbors + 1]
+            for j in nearest:
+                self.G.add_edge(i, j)
+
+        # Initialize edge properties
         self.lengths = {}
         self.conductivity = {}
         for (i, j) in self.G.edges():
-            length = np.sqrt(np.sum((points[i] - points[j])**2))
+            length = distances[i][j]
             self.lengths[(i, j)] = length
             self.lengths[(j, i)] = length
 
@@ -51,6 +66,11 @@ class PhysarumSolver:
 
         self.pressures = np.zeros(self.n_points)
         self.flows = {edge: 0.0 for edge in self.G.edges()}
+
+        # Ensure initial connectivity
+        if not self.check_connectivity():
+            self.restore_connectivity()
+            st.write("Added minimum connections to ensure initial connectivity")
 
     def check_connectivity(self) -> bool:
         """Check if network is fully connected with significant conductivities."""
@@ -80,18 +100,20 @@ class PhysarumSolver:
                 # Find shortest edge between components
                 for n1 in comp1:
                     for n2 in comp2:
-                        dist = self.lengths[(n1, n2)]
+                        dist = np.sqrt(np.sum((self.points[n1] - self.points[n2]) ** 2))
                         if dist < min_dist:
                             min_dist = dist
                             best_edge = (n1, n2)
 
                 if best_edge:
+                    # Add edge to graph and initialize properties
+                    self.G.add_edge(*best_edge)
+                    self.lengths[best_edge] = min_dist
+                    self.lengths[(best_edge[1], best_edge[0])] = min_dist
+
                     # Restore conductivity
-                    self.conductivity[best_edge] = max(
-                        self.conductivity[best_edge],
-                        self.params.min_conductivity * 2
-                    )
-                    self.conductivity[(best_edge[1], best_edge[0])] = self.conductivity[best_edge]
+                    self.conductivity[best_edge] = self.params.min_conductivity * 2
+                    self.conductivity[(best_edge[1], best_edge[0])] = self.params.min_conductivity * 2
 
     def compute_flows(self, source: int, sink: int) -> None:
         """Compute flows using Kirchhoff's laws"""
@@ -126,26 +148,30 @@ class PhysarumSolver:
             self.flows[(j, i)] = abs(flow)
 
     def update_conductivity(self) -> float:
-        """Update conductivity based on flows"""
+        """Update conductivity based on flows with dynamic decay"""
         max_change = 0.0
 
         # Calculate average flow for adaptive thresholding
         avg_flow = np.mean(list(self.flows.values()))
-        flow_threshold = avg_flow * 0.1  # 10% of average flow
+        flow_threshold = avg_flow * self.params.weak_flow_threshold
 
         for edge in self.G.edges():
             flow = self.flows[edge]
             old_conductivity = self.conductivity[edge]
 
-            # Modified update rule with flow threshold
+            # Dynamic decay rate based on flow strength
+            decay_rate = (self.params.mu * self.params.decay_multiplier 
+                        if flow < flow_threshold else self.params.mu)
+
+            # Growth term based on flow threshold
             if flow > flow_threshold:
                 growth_term = pow(flow, self.params.gamma)
             else:
-                growth_term = pow(flow_threshold, self.params.gamma)
+                growth_term = pow(flow_threshold, self.params.gamma) * 0.5  # Reduced growth for weak flows
 
-            # Update according to modified Tero model
+            # Update conductivity with dynamic decay
             new_conductivity = old_conductivity + self.params.dt * (
-                growth_term - self.params.mu * old_conductivity
+                growth_term - decay_rate * old_conductivity
             )
 
             # Apply minimum conductivity constraint
@@ -289,46 +315,44 @@ class PhysarumSolver:
 
     def extract_route(self, best_conductivity: Dict) -> List[int]:
         """
-        Extract route from conductivity configuration
+        Extract route from conductivity configuration using TSP solver
         Args:
             best_conductivity: Conductivity values for each edge
         Returns:
             route: List of node indices forming the route
         """
-        # Create graph with edges weighted by conductivity
+        # Create graph with significant connections
         G = nx.Graph()
         for (i, j), cond in best_conductivity.items():
-            if cond > 1e-4:  # Only consider significant connections
-                G.add_edge(i, j, weight=1.0/cond)  # Use inverse for shortest path
+            if cond > self.params.min_conductivity:
+                # Use inverse conductivity as weight (stronger connections = shorter distances)
+                G.add_edge(i, j, weight=1.0/cond)
 
-        # Find route starting from depot (node 0)
-        route = [0]  # Start at depot
-        current = 0
-        unvisited = set(range(1, self.n_points))  # Skip depot
+        # Ensure all nodes are connected
+        if not nx.is_connected(G):
+            st.warning("Network not fully connected, adding minimal connections")
+            for i in range(self.n_points):
+                if i not in G:
+                    # Connect to nearest node in existing graph
+                    min_dist = float('inf')
+                    nearest = None
+                    for j in G.nodes():
+                        dist = np.sqrt(np.sum((self.points[i] - self.points[j]) ** 2))
+                        if dist < min_dist:
+                            min_dist = dist
+                            nearest = j
+                    if nearest is not None:
+                        G.add_edge(i, nearest, weight=min_dist)
 
-        while unvisited:
-            # Find closest unvisited node
-            min_dist = float('inf')
-            next_node = None
-            for node in unvisited:
-                try:
-                    path = nx.shortest_path(G, current, node, weight='weight')
-                    dist = sum(best_conductivity[(path[i], path[i+1])] 
-                             for i in range(len(path)-1))
-                    if dist < min_dist:
-                        min_dist = dist
-                        next_node = node
-                except nx.NetworkXNoPath:
-                    continue
+        # Use NetworkX's approximation for TSP
+        route = list(nx.approximation.traveling_salesman_problem(G, cycle=True))
 
-            if next_node is None:
-                break  # No feasible path found
+        # Ensure route starts and ends at depot (0)
+        if route[0] != 0:
+            # Find position of depot and rotate list
+            depot_pos = route.index(0)
+            route = route[depot_pos:] + route[1:depot_pos] + [0]
 
-            route.append(next_node)
-            unvisited.remove(next_node)
-            current = next_node
-
-        route.append(0)  # Return to depot
         return route
 
 def create_random_points(n_points: int, 
