@@ -407,8 +407,7 @@ def main():
 
                 # Run solver
                 with st.spinner("Running simulation..."):
-                    best_conductivity, costs = solver.solve(
-                        source, sink, max_iterations)
+                    best_conductivity, costs = solver.solve(max_iterations)
 
                     # Show final network state
                     fig = solver.visualize_network(max_iterations)
@@ -422,6 +421,12 @@ def main():
                     ax.set_ylabel("Network Cost")
                     ax.set_yscale('log')
                     st.pyplot(cost_fig)
+
+                    # Extract final route
+                    final_route = solver.extract_route(best_conductivity)
+                    st.subheader("Final Route")
+                    st.write(f"Route: {final_route}")
+                    st.write(f"Route length: {len(final_route)} nodes")
 
                     # Display metrics
                     col1, col2 = st.columns(2)
