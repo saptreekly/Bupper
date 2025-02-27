@@ -562,13 +562,13 @@ class ACO:
     def solve(self,
              points: np.ndarray,
              route_nodes: List[int],
-             demands: List[float],
-             capacity: float,
              n_iterations: int = 100,
              time_windows: Optional[Dict[int, TimeWindow]] = None,
-             conductivities: Optional[Dict] = None) -> Tuple[List[int], float, Dict[int, float]]:
+             conductivities: Optional[Dict] = None,
+             demands: Optional[List[float]] = None,
+             capacity: Optional[float] = None) -> Tuple[List[int], float, Dict[int, float]]:
         """
-        Solve TSP/VRP with soft constraints and Physarum integration
+        Solve TSP/VRP with optional constraints and Physarum integration
         """
         import streamlit as st
 
@@ -585,6 +585,7 @@ class ACO:
         # Initialize pheromone using conductivities if available
         pheromone = self.initialize_pheromone(n_points, conductivities)
 
+        # Store constraints if provided
         self.demands = demands
         self.capacity = capacity
 
@@ -619,7 +620,7 @@ class ACO:
                         # Add soft penalties for constraint violations
                         penalty = 0.0
 
-                        # Time window penalties
+                        # Time window penalties if enabled
                         if time_windows:
                             for node, arrival in arrival_times.items():
                                 if node in time_windows:
@@ -628,11 +629,12 @@ class ACO:
                                         delay = arrival - tw.latest
                                         penalty += delay * self.time_penalty_factor
 
-                        # Capacity penalties
-                        route_demand = sum(demands[i] for i in path[1:-1])
-                        if route_demand > capacity:
-                            excess = route_demand - capacity
-                            penalty += excess * self.base_time_penalty
+                        # Capacity penalties if enabled
+                        if demands is not None and capacity is not None:
+                            route_demand = sum(demands[i] for i in path[1:-1])
+                            if route_demand > capacity:
+                                excess = route_demand - capacity
+                                penalty += excess * self.base_time_penalty
 
                         total_cost = base_cost + penalty
 
@@ -663,7 +665,7 @@ class ACO:
                         pheromone, all_paths, all_costs, 
                         self.base_evaporation
                     )
-                    
+
             self.adapt_parameters(iteration, best_cost, previous_best_cost, len(points))
 
         return best_path, best_cost, best_arrival_times

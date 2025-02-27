@@ -131,6 +131,7 @@ class HybridSolver:
         recovery_mode = False
         previous_conductivities = {}
         stagnation_counter = 0
+        early_stop_threshold = 0.001  # 0.1% improvement threshold
 
         for iteration in range(self.max_hybrid_iterations):
             st.write(f"\nHybrid Iteration {iteration + 1}")
@@ -140,8 +141,11 @@ class HybridSolver:
             conductivities, _ = self.physarum.solve(max_iterations=500)
 
             # Check for Physarum convergence
-            if self.check_convergence(conductivities, previous_conductivities):
-                st.write("Physarum optimization converged early")
+            if previous_conductivities:
+                avg_change = self.check_convergence(conductivities, previous_conductivities)
+                if avg_change < early_stop_threshold:
+                    st.write("Physarum optimization converged early")
+                    break
             previous_conductivities = conductivities.copy()
 
             # Filter network based on conductivities
@@ -158,6 +162,7 @@ class HybridSolver:
                     'conductivities': conductivities
                 }
 
+                # Only include constraints if enabled
                 if self.enable_capacity:
                     aco_params.update({
                         'demands': demands,
@@ -183,7 +188,6 @@ class HybridSolver:
                     for i in range(len(route) - 1):
                         edge = (route[i], route[i + 1])
                         if edge in conductivities:
-                            # Increase reinforcement for better solutions
                             boost = 1.5 + (best_cost - cost) / best_cost
                             conductivities[edge] *= boost
                             conductivities[(edge[1], edge[0])] = conductivities[edge]
