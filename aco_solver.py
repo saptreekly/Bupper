@@ -647,6 +647,10 @@ class ACO:
                         f"Violations: {initial_violations}")
 
             # Update best solution
+            if not all_costs:  # Handle empty solutions case
+                st.warning(f"No valid solutions found in iteration {iteration}")
+                continue  # Skip to next iteration
+
             min_cost_idx = np.argmin(all_costs)
             if all_costs[min_cost_idx] < best_cost:
                 best_path = all_paths[min_cost_idx]
