@@ -162,34 +162,77 @@ class PhysarumSolver:
                   for edge in self.G.edges())
 
     def visualize_network(self, iteration: int) -> plt.Figure:
-        """Visualize current network state"""
+        """Visualize current network state with enhanced visibility"""
         fig, ax = plt.subplots(figsize=(10, 10))
 
-        # Draw edges with thickness proportional to conductivity
+        # Draw edges with enhanced visibility
         max_conductivity = max(self.conductivity.values())
         min_conductivity = self.params.min_conductivity
 
+        # Define color scheme
+        edge_color = '#1E56A0'  # Royal blue
+        strong_edge_color = '#D63230'  # Crimson for strong connections
+
         for (i, j) in self.G.edges():
-            relative_thickness = (self.conductivity[(i, j)] - min_conductivity) / (max_conductivity - min_conductivity)
-            if relative_thickness > 0.01:  # Only draw significant edges
+            relative_strength = (self.conductivity[(i, j)] - min_conductivity) / (max_conductivity - min_conductivity)
+
+            if relative_strength > 0.001:  # Lower threshold for visibility
+                # Adjust line thickness (increased scale)
+                thickness = max(0.5, relative_strength * 8.0)
+
+                # Adjust opacity (higher minimum)
+                opacity = max(0.4, min(0.9, 0.4 + relative_strength * 0.5))
+
+                # Use different styles based on strength
+                if relative_strength > 0.5:
+                    color = strong_edge_color
+                    linestyle = '-'  # Solid for strong connections
+                else:
+                    color = edge_color
+                    linestyle = '--'  # Dashed for weaker connections
+
                 ax.plot([self.points[i,0], self.points[j,0]],
                        [self.points[i,1], self.points[j,1]],
-                       'k-', linewidth=relative_thickness*5,
-                       alpha=relative_thickness)
+                       color=color,
+                       linestyle=linestyle,
+                       linewidth=thickness,
+                       alpha=opacity,
+                       zorder=1)  # Ensure edges are below nodes
 
+        # Draw nodes with enhanced visibility
+        node_size = 150
         # Draw nodes
         ax.scatter(self.points[:,0], self.points[:,1], 
-                  c='blue', s=100)
+                  c='#2B2D42',  # Dark blue-gray
+                  s=node_size,
+                  zorder=2,  # Ensure nodes are above edges
+                  edgecolor='white',
+                  linewidth=1)
 
         # Highlight source and sink
         ax.scatter([self.points[0,0]], [self.points[0,1]], 
-                  c='green', s=200, label='Source')
+                  c='#06A77D',  # Green
+                  s=node_size*1.5,
+                  label='Source',
+                  zorder=3,
+                  edgecolor='white',
+                  linewidth=1.5)
         ax.scatter([self.points[-1,0]], [self.points[-1,1]], 
-                  c='red', s=200, label='Sink')
+                  c='#D63230',  # Red
+                  s=node_size*1.5,
+                  label='Sink',
+                  zorder=3,
+                  edgecolor='white',
+                  linewidth=1.5)
 
         ax.set_title(f'Network State (Iteration {iteration})')
         ax.set_aspect('equal')
-        ax.legend()
+        ax.legend(fontsize=10, markerscale=1.5)
+
+        # Clean up axes
+        ax.set_xticks([])
+        ax.set_yticks([])
+
         plt.close()  # Prevent display in notebook context
         return fig
 
