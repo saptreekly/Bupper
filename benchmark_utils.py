@@ -7,6 +7,7 @@ import io
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from utils import TimeWindow  # Add TimeWindow import
 
 @dataclass
 class BenchmarkResult:
@@ -22,7 +23,7 @@ class BenchmarkResult:
 
 class BenchmarkManager:
     """Manage benchmarking datasets and results"""
-    
+
     def __init__(self):
         self.results: List[BenchmarkResult] = []
         self.known_solutions = self._load_known_solutions()
@@ -41,15 +42,15 @@ class BenchmarkManager:
         try:
             response = requests.get(url)
             response.raise_for_status()
-            
+
             # Parse Solomon format
             lines = response.text.strip().split('\n')
             n_vehicles = int(lines[4].split()[0])
             capacity = float(lines[4].split()[1])
-            
+
             points = []
             time_windows = {}
-            
+
             # Skip header lines
             for line in lines[9:]:
                 data = line.split()
@@ -61,16 +62,16 @@ class BenchmarkManager:
                     ready_time = float(data[4])
                     due_time = float(data[5])
                     service_time = float(data[6])
-                    
+
                     points.append([x, y])
                     time_windows[cust_no] = TimeWindow(
                         earliest=ready_time,
                         latest=due_time,
                         service_time=service_time
                     )
-            
+
             return np.array(points), time_windows
-            
+
         except Exception as e:
             st.error(f"Error loading Solomon instance: {str(e)}")
             return None, None
@@ -81,10 +82,10 @@ class BenchmarkManager:
         """Generate random benchmark instance"""
         points = np.random.rand(n_points, 2) * size
         points[0] = [size/2, size/2]  # Center depot
-        
+
         time_windows = {}
         horizon = size * 2  # Time horizon based on space size
-        
+
         for i in range(n_points):
             earliest = np.random.uniform(0, horizon/2)
             width = np.random.uniform(horizon/4, horizon/2)
@@ -93,7 +94,7 @@ class BenchmarkManager:
                 latest=earliest + width,
                 service_time=10.0
             )
-            
+
         return points, time_windows
 
     def run_benchmark(self, solver, instance_name: str, 
@@ -104,27 +105,27 @@ class BenchmarkManager:
         total_runtime = 0
         best_cost = float('inf')
         total_iterations = 0
-        
+
         for run in range(n_runs):
             start_time = time.time()
             route, cost, _ = solver.solve(points, list(range(len(points))), 
                                         [1.0]*len(points), 100.0,
                                         time_windows=time_windows)
             runtime = time.time() - start_time
-            
+
             total_runtime += runtime
             best_cost = min(best_cost, cost)
             total_iterations += solver.last_improvement_iteration
-            
+
         avg_runtime = total_runtime / n_runs
         avg_iterations = total_iterations / n_runs
-        
+
         # Calculate gap to best known solution if available
         best_known = self.known_solutions.get(instance_name)
         gap = None
         if best_known:
             gap = ((best_cost - best_known) / best_known) * 100
-            
+
         return BenchmarkResult(
             instance_name=instance_name,
             n_points=len(points),
@@ -141,30 +142,30 @@ class BenchmarkManager:
         if not self.results:
             st.warning("No benchmark results available")
             return
-            
+
         # Convert results to DataFrame for easier plotting
         df = pd.DataFrame([vars(r) for r in self.results])
-        
+
         st.subheader("Benchmark Results")
-        
+
         # Size vs Runtime plot
         st.write("Problem Size vs Runtime")
         size_runtime_chart = st.line_chart(
             df.set_index('n_points')['runtime']
         )
-        
+
         # Size vs Solution Quality
         if any(df['gap_to_best'].notna()):
             st.write("Solution Quality Gap vs Problem Size")
             quality_chart = st.line_chart(
                 df.set_index('n_points')['gap_to_best']
             )
-            
+
         # Summary statistics
         st.write("Performance Summary")
         summary_df = df.describe()
         st.dataframe(summary_df)
-        
+
         # Detailed results table
         st.write("Detailed Results")
         st.dataframe(df)
