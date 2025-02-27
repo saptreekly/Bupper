@@ -14,6 +14,8 @@ class PhysarumParams:
     mu: float = 0.1    # Decay rate
     dt: float = 0.01   # Time step
     convergence_threshold: float = 1e-6
+    min_conductivity: float = 0.01  # Minimum conductivity threshold
+    connectivity_check_interval: int = 50  # Check connectivity every N iterations
 
 class PhysarumSolver:
     """Physarum-inspired network optimizer"""
@@ -23,14 +25,7 @@ class PhysarumSolver:
                  params: Optional[PhysarumParams] = None,
                  time_windows: Optional[Dict[int, TimeWindow]] = None,
                  speed: float = 1.0):
-        """
-        Initialize solver with points and parameters
-        Args:
-            points: Nx2 array of point coordinates
-            params: Simulation parameters
-            time_windows: Optional time window constraints
-            speed: Travel speed for time window calculations
-        """
+        """Initialize solver with points and parameters"""
         self.points = points
         self.n_points = len(points)
         self.params = params or PhysarumParams()
@@ -41,27 +36,65 @@ class PhysarumSolver:
         self.G = nx.complete_graph(self.n_points)
         self.pos = {i: points[i] for i in range(self.n_points)}
 
-        # Calculate edge lengths
+        # Calculate edge lengths and initialize conductivities
         self.lengths = {}
         self.conductivity = {}
         for (i, j) in self.G.edges():
             length = np.sqrt(np.sum((points[i] - points[j])**2))
             self.lengths[(i, j)] = length
             self.lengths[(j, i)] = length
-            # Initialize conductivity proportional to 1/length
-            self.conductivity[(i, j)] = 1.0 / length
-            self.conductivity[(j, i)] = 1.0 / length
+
+            # Initialize with higher minimum conductivity
+            initial_conductivity = max(1.0 / length, self.params.min_conductivity)
+            self.conductivity[(i, j)] = initial_conductivity
+            self.conductivity[(j, i)] = initial_conductivity
 
         self.pressures = np.zeros(self.n_points)
         self.flows = {edge: 0.0 for edge in self.G.edges()}
 
+    def check_connectivity(self) -> bool:
+        """Check if network is fully connected with significant conductivities."""
+        G_significant = nx.Graph()
+        for (i, j), cond in self.conductivity.items():
+            if cond > self.params.min_conductivity:
+                G_significant.add_edge(i, j)
+        return nx.is_connected(G_significant)
+
+    def restore_connectivity(self):
+        """Restore minimum connections to ensure network connectivity."""
+        G_significant = nx.Graph()
+        for (i, j), cond in self.conductivity.items():
+            if cond > self.params.min_conductivity:
+                G_significant.add_edge(i, j)
+
+        components = list(nx.connected_components(G_significant))
+        if len(components) > 1:
+            st.write(f"Restoring connectivity between {len(components)} components")
+            # Connect components using minimum spanning tree approach
+            for i in range(len(components)-1):
+                comp1 = list(components[i])
+                comp2 = list(components[i+1])
+                min_dist = float('inf')
+                best_edge = None
+
+                # Find shortest edge between components
+                for n1 in comp1:
+                    for n2 in comp2:
+                        dist = self.lengths[(n1, n2)]
+                        if dist < min_dist:
+                            min_dist = dist
+                            best_edge = (n1, n2)
+
+                if best_edge:
+                    # Restore conductivity
+                    self.conductivity[best_edge] = max(
+                        self.conductivity[best_edge],
+                        self.params.min_conductivity * 2
+                    )
+                    self.conductivity[(best_edge[1], best_edge[0])] = self.conductivity[best_edge]
+
     def compute_flows(self, source: int, sink: int) -> None:
-        """
-        Compute flows using Kirchhoff's laws
-        Args:
-            source: Source node index
-            sink: Sink node index
-        """
+        """Compute flows using Kirchhoff's laws"""
         n = self.n_points
         A = np.zeros((n, n))  # Conductance matrix
         b = np.zeros(n)      # RHS vector
@@ -93,28 +126,33 @@ class PhysarumSolver:
             self.flows[(j, i)] = abs(flow)
 
     def update_conductivity(self) -> float:
-        """
-        Update conductivity based on flows
-        Returns:
-            max_change: Maximum conductivity change
-        """
+        """Update conductivity based on flows"""
         max_change = 0.0
+
+        # Calculate average flow for adaptive thresholding
+        avg_flow = np.mean(list(self.flows.values()))
+        flow_threshold = avg_flow * 0.1  # 10% of average flow
+
         for edge in self.G.edges():
             flow = self.flows[edge]
             old_conductivity = self.conductivity[edge]
 
-            # Update according to Tero model
-            new_conductivity = (old_conductivity + 
-                             self.params.dt * (
-                                 pow(flow, self.params.gamma) - 
-                                 self.params.mu * old_conductivity
-                             ))
+            # Modified update rule with flow threshold
+            if flow > flow_threshold:
+                growth_term = pow(flow, self.params.gamma)
+            else:
+                growth_term = pow(flow_threshold, self.params.gamma)
 
-            # Ensure non-negative conductivity
-            new_conductivity = max(1e-6, new_conductivity)
+            # Update according to modified Tero model
+            new_conductivity = old_conductivity + self.params.dt * (
+                growth_term - self.params.mu * old_conductivity
+            )
+
+            # Apply minimum conductivity constraint
+            new_conductivity = max(self.params.min_conductivity, new_conductivity)
+
             self.conductivity[edge] = new_conductivity
-            max_change = max(max_change, 
-                          abs(new_conductivity - old_conductivity))
+            max_change = max(max_change, abs(new_conductivity - old_conductivity))
 
         return max_change
 
@@ -124,19 +162,15 @@ class PhysarumSolver:
                   for edge in self.G.edges())
 
     def visualize_network(self, iteration: int) -> plt.Figure:
-        """
-        Visualize current network state
-        Args:
-            iteration: Current iteration number
-        Returns:
-            fig: matplotlib figure
-        """
+        """Visualize current network state"""
         fig, ax = plt.subplots(figsize=(10, 10))
 
         # Draw edges with thickness proportional to conductivity
         max_conductivity = max(self.conductivity.values())
+        min_conductivity = self.params.min_conductivity
+
         for (i, j) in self.G.edges():
-            relative_thickness = self.conductivity[(i, j)] / max_conductivity
+            relative_thickness = (self.conductivity[(i, j)] - min_conductivity) / (max_conductivity - min_conductivity)
             if relative_thickness > 0.01:  # Only draw significant edges
                 ax.plot([self.points[i,0], self.points[j,0]],
                        [self.points[i,1], self.points[j,1]],
@@ -147,8 +181,15 @@ class PhysarumSolver:
         ax.scatter(self.points[:,0], self.points[:,1], 
                   c='blue', s=100)
 
+        # Highlight source and sink
+        ax.scatter([self.points[0,0]], [self.points[0,1]], 
+                  c='green', s=200, label='Source')
+        ax.scatter([self.points[-1,0]], [self.points[-1,1]], 
+                  c='red', s=200, label='Sink')
+
         ax.set_title(f'Network State (Iteration {iteration})')
         ax.set_aspect('equal')
+        ax.legend()
         plt.close()  # Prevent display in notebook context
         return fig
 
@@ -156,19 +197,15 @@ class PhysarumSolver:
              source: int,
              sink: int,
              max_iterations: int = 1000) -> Tuple[Dict, List[float]]:
-        """
-        Run Physarum simulation
-        Args:
-            source: Source node index
-            sink: Sink node index
-            max_iterations: Maximum number of iterations
-        Returns:
-            best_conductivity: Best conductivity configuration
-            costs: History of network costs
-        """
+        """Run Physarum simulation"""
+        st.write("\n=== Physarum Solver Starting ===")
+        st.write(f"Source: {source}, Sink: {sink}")
+        st.write(f"Number of nodes: {self.n_points}")
+
         costs = []
         best_cost = float('inf')
         best_conductivity = None
+        stagnation_counter = 0
 
         for iteration in range(max_iterations):
             # Compute flows
@@ -176,6 +213,12 @@ class PhysarumSolver:
 
             # Update conductivity
             max_change = self.update_conductivity()
+
+            # Periodically check and restore connectivity
+            if iteration % self.params.connectivity_check_interval == 0:
+                if not self.check_connectivity():
+                    self.restore_connectivity()
+                    st.write(f"Restored connectivity at iteration {iteration}")
 
             # Calculate and track cost
             cost = self.calculate_network_cost()
@@ -185,6 +228,9 @@ class PhysarumSolver:
             if cost < best_cost:
                 best_cost = cost
                 best_conductivity = self.conductivity.copy()
+                stagnation_counter = 0
+            else:
+                stagnation_counter += 1
 
             # Log progress periodically
             if iteration % 100 == 0:
@@ -192,7 +238,7 @@ class PhysarumSolver:
                         f"Max change = {max_change:.6f}")
 
             # Check convergence
-            if max_change < self.params.convergence_threshold:
+            if max_change < self.params.convergence_threshold or stagnation_counter > 50:
                 st.write(f"Converged after {iteration} iterations")
                 break
 
