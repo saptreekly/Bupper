@@ -85,18 +85,6 @@ def main():
         # Input parameters
         st.sidebar.header("Problem Parameters")
 
-        # Instance size
-        #st.sidebar.subheader("Instance Size")
-        #n_points = st.sidebar.slider("Number of Points", 10, 1000, 50,
-        #    help="Total number of delivery points (excluding depot)")
-
-        # Vehicle Parameters
-        #st.sidebar.subheader("Vehicle Parameters")
-        #vehicle_capacity = st.sidebar.slider("Vehicle Capacity", 10, 200, 100,
-        #    help="Maximum capacity for each vehicle")
-        #vehicle_speed = st.sidebar.slider("Vehicle Speed", 0.1, 5.0, 1.0,
-        #    help="Travel speed (distance/time unit)")
-
         # Remove manual vehicle count override since it's now fully automatic
         st.sidebar.markdown("""
         💡 The number of vehicles will be automatically determined based on:
@@ -104,15 +92,6 @@ def main():
         - Number of delivery points
         - Maximum route duration
         """)
-
-        # Time Window Parameters
-        #st.sidebar.subheader("Time Window Parameters")
-        #time_horizon = st.sidebar.slider("Time Horizon", 50.0, 200.0, 100.0,
-        #    help="Maximum planning horizon")
-        #min_window = st.sidebar.slider("Min Time Window", 5.0, 30.0, 10.0,
-        #    help="Minimum width of time windows")
-        #max_window = st.sidebar.slider("Max Time Window", 20.0, 60.0, 30.0,
-        #    help="Maximum width of time windows")
 
         # Add new parameters to sidebar
         st.sidebar.subheader("Optimization Parameters")
@@ -399,9 +378,6 @@ def main():
 
         # Simulation parameters
         st.sidebar.subheader("Physarum Parameters")
-        #n_points = st.sidebar.slider("Number of Points", 5, 50, 10,
-        #    help="Number of nodes in the network")
-
         gamma = st.sidebar.slider("Growth Rate (γ)", 0.5, 2.0, 1.3,
             help="Flow feedback strength")
         mu = st.sidebar.slider("Decay Rate (μ)", 0.01, 0.5, 0.1,
@@ -486,6 +462,17 @@ def main():
             help="Threshold for solution improvement"
         )
 
+        # Constraint toggles
+        st.sidebar.subheader("Constraints")
+        enable_time_windows = st.sidebar.checkbox(
+            "Enable Time Windows", True,
+            help="Apply time window constraints to deliveries"
+        )
+        enable_capacity = st.sidebar.checkbox(
+            "Enable Capacity Constraints", True,
+            help="Apply vehicle capacity constraints"
+        )
+
         if st.button("Run Hybrid Solver"):
             try:
                 # Generate points and time windows
@@ -495,22 +482,24 @@ def main():
                     horizon=time_horizon,
                     min_window=min_window,
                     max_window=max_window
-                )
+                ) if enable_time_windows else None
 
-                # Initialize hybrid solver
+                # Initialize hybrid solver with constraint settings
                 solver = HybridSolver(
                     points=points,
                     time_windows=time_windows,
                     speed=vehicle_speed,
                     convergence_threshold=convergence_threshold,
-                    max_hybrid_iterations=max_hybrid_iterations
+                    max_hybrid_iterations=max_hybrid_iterations,
+                    enable_time_windows=enable_time_windows,
+                    enable_capacity=enable_capacity
                 )
 
                 # Solve using hybrid approach
                 with st.spinner("Running hybrid optimization..."):
                     route, cost, arrival_times = solver.solve(
                         demands=[1.0] * len(points),  # Simple demand model
-                        capacity=vehicle_capacity
+                        capacity=vehicle_capacity if enable_capacity else float('inf')
                     )
 
                 # Display results
@@ -530,8 +519,8 @@ def main():
                 plot_routes(points, [route], [0] * len(points),
                             "Hybrid Solver Route")
 
-                # Time window analysis
-                if time_windows:
+                # Time window analysis (only if enabled)
+                if enable_time_windows and time_windows:
                     st.subheader("Time Window Analysis")
                     violations = []
                     for node in route:
