@@ -6,6 +6,7 @@ from utils import generate_random_points, generate_random_time_windows
 from visualizer import plot_routes
 from clustering import cluster_points, check_capacity_constraints
 from cross_route_optimizer import optimize_cross_route
+from benchmark_utils import BenchmarkManager
 
 def verify_and_fix_routes(routes, num_points, distances, demands, capacity, time_windows, speed, max_repair_iterations=50, cost_increase_threshold=0.2, time_penalty_multiplier=3.0):
     fixed_routes = []
@@ -128,6 +129,8 @@ def main():
         "Capacity Violation Penalty", 1.0, 5.0, 2.0,
         help="Penalty factor for capacity violations")
 
+    st.sidebar.subheader("Benchmarking")
+    run_benchmarks = st.sidebar.checkbox("Run Benchmarks", False)
 
     if st.button("Generate and Solve VRP"):
         try:
@@ -290,6 +293,65 @@ def main():
         except Exception as e:
             st.error(f"An error occurred: {str(e)}")
             st.exception(e)  # This will show the full traceback
+
+    if run_benchmarks:
+        st.title("VRP Solver Benchmarking")
+
+        benchmark_manager = BenchmarkManager()
+
+        # Configure benchmark parameters
+        n_runs = st.slider("Number of runs per instance", 1, 5, 3)
+
+        st.subheader("Available Benchmark Sets")
+
+        # Random instance generation
+        if st.checkbox("Generate Random Instances"):
+            sizes = st.multiselect(
+                "Select instance sizes",
+                options=[25, 50, 100, 200, 500, 1000],
+                default=[100, 200]
+            )
+
+            if st.button("Run Random Benchmarks"):
+                with st.spinner("Running benchmarks..."):
+                    for size in sizes:
+                        points, time_windows = benchmark_manager.generate_random_instance(size)
+                        result = benchmark_manager.run_benchmark(
+                            aco, f"random_{size}", points, time_windows, n_runs
+                        )
+                        benchmark_manager.results.append(result)
+
+                # Plot results
+                benchmark_manager.plot_results()
+
+        # Solomon instances
+        if st.checkbox("Run Solomon VRPTW Benchmarks"):
+            solomon_urls = {
+                "C101_25": "http://example.com/solomon/C101_25.txt",  # Replace with actual URLs
+                "C101_50": "http://example.com/solomon/C101_50.txt",
+                "C101_100": "http://example.com/solomon/C101_100.txt"
+            }
+
+            selected_instances = st.multiselect(
+                "Select Solomon instances",
+                options=list(solomon_urls.keys()),
+                default=["C101_25"]
+            )
+
+            if st.button("Run Solomon Benchmarks"):
+                with st.spinner("Running Solomon benchmarks..."):
+                    for instance in selected_instances:
+                        points, time_windows = benchmark_manager.load_solomon_instance(
+                            solomon_urls[instance]
+                        )
+                        if points is not None:
+                            result = benchmark_manager.run_benchmark(
+                                aco, instance, points, time_windows, n_runs
+                            )
+                            benchmark_manager.results.append(result)
+
+                # Plot results
+                benchmark_manager.plot_results()
 
 if __name__ == "__main__":
     main()
