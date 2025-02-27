@@ -4,7 +4,6 @@ from dataclasses import dataclass
 import json
 from typing import List, Dict, Tuple, Optional, Any
 import time
-from queue import Queue
 from threading import Lock
 
 @dataclass
@@ -12,27 +11,15 @@ class VisualizationState:
     """Track visualization state for both solvers"""
     nodes: List[Tuple[float, float]]
     edges: List[Dict]
-    ant_positions: List[Tuple[float, float]] = None
+    ant_positions: List[Tuple[int, int]] = None
     current_phase: str = "physarum"  # or "aco"
 
 class RealTimeVisualizer:
     def __init__(self):
         self.state = None
         self.state_lock = Lock()
-        self.update_queue = Queue(maxsize=100)
         self.last_update_time = 0
         self.update_interval = 0.1  # seconds between updates
-
-    def setup_visualization(self, points: np.ndarray):
-        """Initialize visualization state"""
-        with self.state_lock:
-            # Convert points to list for JSON serialization
-            nodes = [(float(x), float(y)) for x, y in points]
-            self.state = VisualizationState(
-                nodes=nodes,
-                edges=[],
-                ant_positions=[]
-            )
 
     def _throttled_update(self) -> bool:
         """Check if enough time has passed for a new update"""
@@ -51,6 +38,16 @@ class RealTimeVisualizer:
             rows, cols = matrix.nonzero()
             return [{"from": int(i), "to": int(j), "strength": float(matrix[i, j])}
                    for i, j in zip(rows, cols)]
+
+    def setup_visualization(self, points: np.ndarray):
+        """Initialize visualization state"""
+        with self.state_lock:
+            nodes = [(float(x), float(y)) for x, y in points]
+            self.state = VisualizationState(
+                nodes=nodes,
+                edges=[],
+                ant_positions=[]
+            )
 
     def update_physarum(self, conductivities: Dict):
         """Update Physarum visualization state"""
@@ -84,7 +81,9 @@ class RealTimeVisualizer:
         viz_html = f"""
         <div style="width: 100%; height: 500px; position: relative;">
             <canvas id="simulation_canvas" style="width: 100%; height: 100%;"></canvas>
-            <div id="stats" style="position: absolute; top: 10px; right: 10px; color: white;"></div>
+            <div id="stats" style="position: absolute; top: 10px; right: 10px; 
+                 background: rgba(0,0,0,0.5); padding: 5px; border-radius: 3px; 
+                 color: white; font-family: monospace;"></div>
         </div>
         <script>
         const canvas = document.getElementById('simulation_canvas');
@@ -96,16 +95,71 @@ class RealTimeVisualizer:
         let targetState = null;
         let transitionProgress = 0;
         const transitionDuration = 500; // ms
-        let lastRenderTime = 0;
+        let lastFrameTime = 0;
         let frameCount = 0;
         let lastFpsUpdate = 0;
         let fps = 0;
 
+        // Particle system
+        class ParticleSystem {{
+            constructor() {{
+                this.particles = [];
+                this.maxParticles = 200;
+            }}
+
+            addParticle(x1, y1, x2, y2, phase) {{
+                if (this.particles.length >= this.maxParticles) return;
+
+                const t = Math.random();
+                const x = x1 + (x2 - x1) * t;
+                const y = y1 + (y2 - y1) * t;
+                const life = 1.0;
+                const velocity = {{
+                    x: (x2 - x1) * 0.001,
+                    y: (y2 - y1) * 0.001
+                }};
+
+                this.particles.push({{ x, y, life, velocity, phase }});
+            }}
+
+            update(deltaTime) {{
+                this.particles = this.particles.filter(p => {{
+                    p.life -= deltaTime * 0.001;
+                    p.x += p.velocity.x * deltaTime;
+                    p.y += p.velocity.y * deltaTime;
+                    return p.life > 0;
+                }});
+            }}
+
+            draw(ctx) {{
+                this.particles.forEach(p => {{
+                    const alpha = p.life;
+                    const radius = 3 * p.life;
+
+                    const gradient = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, radius);
+                    const color = p.phase === 'physarum' ? 
+                        `rgba(255, 255, 0, ${alpha})` : 
+                        `rgba(0, 255, 255, ${alpha})`;
+
+                    gradient.addColorStop(0, color);
+                    gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+                    ctx.fillStyle = gradient;
+                    ctx.fill();
+                }});
+            }}
+        }}
+
+        const particles = new ParticleSystem();
+
         // Setup canvas size and scaling
         function setupCanvas() {{
             const rect = canvas.parentElement.getBoundingClientRect();
-            canvas.width = rect.width;
-            canvas.height = rect.height;
+            canvas.width = rect.width * window.devicePixelRatio;
+            canvas.height = rect.height * window.devicePixelRatio;
+            ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
             ctx.clearRect(0, 0, canvas.width, canvas.height);
         }}
 
@@ -122,24 +176,23 @@ class RealTimeVisualizer:
             ];
         }}
 
-        // Lerp between two values
-        function lerp(start, end, t) {{
-            return start + (end - start) * t;
-        }}
-
         // Draw network with fluid animations
-        function drawNetwork(state, t) {{
+        function drawNetwork(state, deltaTime) {{
             if (!state) return;
             setupCanvas();
 
             // Update FPS counter
             frameCount++;
-            if (Date.now() - lastFpsUpdate > 1000) {{
-                fps = Math.round(frameCount * 1000 / (Date.now() - lastFpsUpdate));
+            const now = performance.now();
+            if (now - lastFpsUpdate > 1000) {{
+                fps = Math.round(frameCount * 1000 / (now - lastFpsUpdate));
                 frameCount = 0;
-                lastFpsUpdate = Date.now();
-                stats.textContent = `FPS: ${{fps}}`;
+                lastFpsUpdate = now;
+                stats.textContent = `FPS: ${fps}`;
             }}
+
+            // Update particle system
+            particles.update(deltaTime);
 
             // Draw edges with glowing effect
             state.edges.forEach(edge => {{
@@ -152,17 +205,13 @@ class RealTimeVisualizer:
                 const gradient = ctx.createLinearGradient(x1, y1, x2, y2);
 
                 if (state.phase === 'physarum') {{
-                    // Yellow glow for Physarum
-                    const alpha = Math.min(1, edge.strength);
-                    gradient.addColorStop(0, `rgba(255, 255, 100, ${{alpha}})`);
-                    gradient.addColorStop(0.5, `rgba(255, 255, 0, ${{alpha * 1.2}})`);
-                    gradient.addColorStop(1, `rgba(255, 255, 100, ${{alpha}})`);
+                    gradient.addColorStop(0, `rgba(255, 255, 100, ${edge.strength})`);
+                    gradient.addColorStop(0.5, `rgba(255, 255, 0, ${edge.strength * 1.2})`);
+                    gradient.addColorStop(1, `rgba(255, 255, 100, ${edge.strength})`);
                 }} else {{
-                    // Cyan glow for ACO
-                    const alpha = Math.min(1, edge.strength);
-                    gradient.addColorStop(0, `rgba(100, 255, 255, ${{alpha}})`);
-                    gradient.addColorStop(0.5, `rgba(0, 255, 255, ${{alpha * 1.2}})`);
-                    gradient.addColorStop(1, `rgba(100, 255, 255, ${{alpha}})`);
+                    gradient.addColorStop(0, `rgba(100, 255, 255, ${edge.strength})`);
+                    gradient.addColorStop(0.5, `rgba(0, 255, 255, ${edge.strength * 1.2})`);
+                    gradient.addColorStop(1, `rgba(100, 255, 255, ${edge.strength})`);
                 }}
 
                 // Draw edge with gradient
@@ -173,31 +222,20 @@ class RealTimeVisualizer:
                 ctx.lineWidth = Math.max(2, edge.strength * 4);
                 ctx.stroke();
 
-                // Add particle effects
-                if (Math.random() < 0.3 * edge.strength) {{
-                    const t = Math.random();
-                    const px = x1 + (x2 - x1) * t;
-                    const py = y1 + (y2 - y1) * t;
-
-                    // Particle glow
-                    const particleGradient = ctx.createRadialGradient(px, py, 0, px, py, 4);
-                    particleGradient.addColorStop(0, state.phase === 'physarum' ? 
-                        'rgba(255, 255, 0, 0.8)' : 
-                        'rgba(0, 255, 255, 0.8)');
-                    particleGradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
-
-                    ctx.beginPath();
-                    ctx.arc(px, py, 4, 0, 2 * Math.PI);
-                    ctx.fillStyle = particleGradient;
-                    ctx.fill();
+                // Add particles based on edge strength
+                if (Math.random() < edge.strength * 0.1) {{
+                    particles.addParticle(x1, y1, x2, y2, state.phase);
                 }}
             }});
+
+            // Draw particles
+            particles.draw(ctx);
 
             // Draw nodes with glow effects
             state.nodes.forEach((node, i) => {{
                 const [x, y] = dataToCanvas(node[0], node[1]);
 
-                // Add glow effect
+                // Node glow
                 const glow = ctx.createRadialGradient(x, y, 2, x, y, 8);
                 if (i === 0) {{
                     // Depot node
@@ -209,13 +247,13 @@ class RealTimeVisualizer:
                 }}
 
                 ctx.beginPath();
-                ctx.arc(x, y, 8, 0, 2 * Math.PI);
+                ctx.arc(x, y, 8, 0, Math.PI * 2);
                 ctx.fillStyle = glow;
                 ctx.fill();
 
-                // Draw node
+                // Node body
                 ctx.beginPath();
-                ctx.arc(x, y, i === 0 ? 6 : 4, 0, 2 * Math.PI);
+                ctx.arc(x, y, i === 0 ? 6 : 4, 0, Math.PI * 2);
                 ctx.fillStyle = i === 0 ? '#00ff00' : '#ffffff';
                 ctx.fill();
             }});
@@ -231,13 +269,13 @@ class RealTimeVisualizer:
                     antGlow.addColorStop(1, 'rgba(255, 50, 50, 0)');
 
                     ctx.beginPath();
-                    ctx.arc(x, y, 6, 0, 2 * Math.PI);
+                    ctx.arc(x, y, 6, 0, Math.PI * 2);
                     ctx.fillStyle = antGlow;
                     ctx.fill();
 
                     // Ant body
                     ctx.beginPath();
-                    ctx.arc(x, y, 3, 0, 2 * Math.PI);
+                    ctx.arc(x, y, 3, 0, Math.PI * 2);
                     ctx.fillStyle = '#ff3232';
                     ctx.fill();
                 }});
@@ -246,18 +284,16 @@ class RealTimeVisualizer:
 
         // Animation loop with state updates
         function animate(timestamp) {{
-            if (!lastRenderTime) lastRenderTime = timestamp;
-            const deltaTime = timestamp - lastRenderTime;
-            lastRenderTime = timestamp;
+            const deltaTime = lastFrameTime ? timestamp - lastFrameTime : 0;
+            lastFrameTime = timestamp;
 
-            // Get latest state
             try {{
-                const stateData = JSON.parse(json.dumps({
-                    "nodes": self.state.nodes,
-                    "edges": self.state.edges,
-                    "phase": self.state.current_phase,
-                    "ants": self.state.ant_positions
-                }));
+                const stateData = {{
+                    nodes: JSON.stringify(self.state.nodes),
+                    edges: JSON.stringify(self.state.edges),
+                    phase: "{self.state.current_phase}",
+                    ants: JSON.stringify(self.state.ant_positions)
+                }};
 
                 // Update state with smooth transition
                 if (!currentState) {{
@@ -274,7 +310,7 @@ class RealTimeVisualizer:
                 }}
 
                 // Draw current state
-                drawNetwork(currentState, transitionProgress);
+                drawNetwork(currentState, deltaTime);
             }} catch (e) {{
                 console.error('Error updating visualization:', e);
             }}
@@ -284,6 +320,11 @@ class RealTimeVisualizer:
 
         // Start animation loop
         requestAnimationFrame(animate);
+
+        // Handle window resize
+        window.addEventListener('resize', () => {{
+            setupCanvas();
+        }});
         </script>
         """
 
