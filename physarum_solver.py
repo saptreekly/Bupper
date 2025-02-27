@@ -5,6 +5,7 @@ from typing import List, Tuple, Dict, Optional
 import streamlit as st
 from dataclasses import dataclass
 import time
+from utils import TimeWindow
 
 @dataclass
 class PhysarumParams:
@@ -16,24 +17,30 @@ class PhysarumParams:
 
 class PhysarumSolver:
     """Physarum-inspired network optimizer"""
-    
+
     def __init__(self, 
                  points: np.ndarray,
-                 params: Optional[PhysarumParams] = None):
+                 params: Optional[PhysarumParams] = None,
+                 time_windows: Optional[Dict[int, TimeWindow]] = None,
+                 speed: float = 1.0):
         """
         Initialize solver with points and parameters
         Args:
             points: Nx2 array of point coordinates
             params: Simulation parameters
+            time_windows: Optional time window constraints
+            speed: Travel speed for time window calculations
         """
         self.points = points
         self.n_points = len(points)
         self.params = params or PhysarumParams()
-        
+        self.time_windows = time_windows
+        self.speed = speed
+
         # Initialize graph and edge properties
         self.G = nx.complete_graph(self.n_points)
         self.pos = {i: points[i] for i in range(self.n_points)}
-        
+
         # Calculate edge lengths
         self.lengths = {}
         self.conductivity = {}
@@ -44,7 +51,7 @@ class PhysarumSolver:
             # Initialize conductivity proportional to 1/length
             self.conductivity[(i, j)] = 1.0 / length
             self.conductivity[(j, i)] = 1.0 / length
-            
+
         self.pressures = np.zeros(self.n_points)
         self.flows = {edge: 0.0 for edge in self.G.edges()}
 
@@ -58,7 +65,7 @@ class PhysarumSolver:
         n = self.n_points
         A = np.zeros((n, n))  # Conductance matrix
         b = np.zeros(n)      # RHS vector
-        
+
         # Build conductance matrix
         for i, j in self.G.edges():
             conductance = self.conductivity[(i, j)] / self.lengths[(i, j)]
@@ -66,7 +73,7 @@ class PhysarumSolver:
             A[j, j] += conductance
             A[i, j] -= conductance
             A[j, i] -= conductance
-            
+
         # Set boundary conditions
         A[source] = 0
         A[sink] = 0
@@ -74,10 +81,10 @@ class PhysarumSolver:
         A[sink, sink] = 1
         b[source] = 1  # Source pressure
         b[sink] = 0    # Sink pressure
-        
+
         # Solve for pressures
         self.pressures = np.linalg.solve(A, b)
-        
+
         # Calculate flows
         for i, j in self.G.edges():
             conductance = self.conductivity[(i, j)] / self.lengths[(i, j)]
@@ -95,20 +102,20 @@ class PhysarumSolver:
         for edge in self.G.edges():
             flow = self.flows[edge]
             old_conductivity = self.conductivity[edge]
-            
+
             # Update according to Tero model
             new_conductivity = (old_conductivity + 
-                              self.params.dt * (
-                                  pow(flow, self.params.gamma) - 
-                                  self.params.mu * old_conductivity
-                              ))
-            
+                             self.params.dt * (
+                                 pow(flow, self.params.gamma) - 
+                                 self.params.mu * old_conductivity
+                             ))
+
             # Ensure non-negative conductivity
             new_conductivity = max(1e-6, new_conductivity)
             self.conductivity[edge] = new_conductivity
             max_change = max(max_change, 
-                           abs(new_conductivity - old_conductivity))
-            
+                          abs(new_conductivity - old_conductivity))
+
         return max_change
 
     def calculate_network_cost(self) -> float:
@@ -125,7 +132,7 @@ class PhysarumSolver:
             fig: matplotlib figure
         """
         fig, ax = plt.subplots(figsize=(10, 10))
-        
+
         # Draw edges with thickness proportional to conductivity
         max_conductivity = max(self.conductivity.values())
         for (i, j) in self.G.edges():
@@ -135,11 +142,11 @@ class PhysarumSolver:
                        [self.points[i,1], self.points[j,1]],
                        'k-', linewidth=relative_thickness*5,
                        alpha=relative_thickness)
-        
+
         # Draw nodes
         ax.scatter(self.points[:,0], self.points[:,1], 
                   c='blue', s=100)
-        
+
         ax.set_title(f'Network State (Iteration {iteration})')
         ax.set_aspect('equal')
         plt.close()  # Prevent display in notebook context
@@ -162,34 +169,78 @@ class PhysarumSolver:
         costs = []
         best_cost = float('inf')
         best_conductivity = None
-        
+
         for iteration in range(max_iterations):
             # Compute flows
             self.compute_flows(source, sink)
-            
+
             # Update conductivity
             max_change = self.update_conductivity()
-            
+
             # Calculate and track cost
             cost = self.calculate_network_cost()
             costs.append(cost)
-            
+
             # Update best solution
             if cost < best_cost:
                 best_cost = cost
                 best_conductivity = self.conductivity.copy()
-            
+
             # Log progress periodically
             if iteration % 100 == 0:
                 st.write(f"Iteration {iteration}: Cost = {cost:.2f}, "
                         f"Max change = {max_change:.6f}")
-            
+
             # Check convergence
             if max_change < self.params.convergence_threshold:
                 st.write(f"Converged after {iteration} iterations")
                 break
-                
+
         return best_conductivity, costs
+
+    def extract_route(self, best_conductivity: Dict) -> List[int]:
+        """
+        Extract route from conductivity configuration
+        Args:
+            best_conductivity: Conductivity values for each edge
+        Returns:
+            route: List of node indices forming the route
+        """
+        # Create graph with edges weighted by conductivity
+        G = nx.Graph()
+        for (i, j), cond in best_conductivity.items():
+            if cond > 1e-4:  # Only consider significant connections
+                G.add_edge(i, j, weight=1.0/cond)  # Use inverse for shortest path
+
+        # Find route starting from depot (node 0)
+        route = [0]  # Start at depot
+        current = 0
+        unvisited = set(range(1, self.n_points))  # Skip depot
+
+        while unvisited:
+            # Find closest unvisited node
+            min_dist = float('inf')
+            next_node = None
+            for node in unvisited:
+                try:
+                    path = nx.shortest_path(G, current, node, weight='weight')
+                    dist = sum(best_conductivity[(path[i], path[i+1])] 
+                             for i in range(len(path)-1))
+                    if dist < min_dist:
+                        min_dist = dist
+                        next_node = node
+                except nx.NetworkXNoPath:
+                    continue
+
+            if next_node is None:
+                break  # No feasible path found
+
+            route.append(next_node)
+            unvisited.remove(next_node)
+            current = next_node
+
+        route.append(0)  # Return to depot
+        return route
 
 def create_random_points(n_points: int, 
                        size: float = 100.0) -> np.ndarray:
