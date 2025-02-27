@@ -61,82 +61,137 @@ class PhysarumSolver:
                 self.conductivity_matrix[j,i] = init_cond
 
     def compute_flows(self) -> np.ndarray:
-        """Compute flows using optimized parallel processing"""
+        """Compute flows using optimized sparse operations"""
         n = self.n_points
-        total_flows = sparse.lil_matrix((n, n))
+        if n <= 1:
+            return sparse.csr_matrix((n, n))
 
-        # Convert to efficient format once
+        # Convert to CSR once and maintain format
         conductance = self.conductivity_matrix.multiply(1.0 / (self.distances + 1e-6))
-        conductance = conductance.tocsr()  # Convert to CSR for efficient operations
+        conductance = conductance.tocsr()
 
-        # Optimize thread count based on problem size
-        n_workers = min(self.n_points - 1, 4)  # Limit threads for small problems
+        st.write(f"Initial conductance matrix shape: {conductance.shape}, nnz: {conductance.nnz}")
+
+        # Verify matrix has entries
+        if conductance.nnz == 0:
+            st.error("Empty conductance matrix - no valid connections")
+            return sparse.csr_matrix((n, n))
+
+        # Use single thread for small problems
+        if n < 20:
+            total_flows = sparse.lil_matrix((n, n))
+            for dest in range(1, n):
+                try:
+                    flow = self._compute_flow_for_dest(conductance, dest)
+                    total_flows += flow
+                except Exception as e:
+                    st.error(f"Error computing flow for destination {dest}: {str(e)}")
+                    continue
+            return total_flows.tocsr()
+
+        # Parallel processing for larger problems
+        n_workers = min(4, (n - 1) // 5)  # Limit workers based on problem size
+        total_flows = sparse.lil_matrix((n, n))
 
         with ThreadPoolExecutor(max_workers=n_workers) as executor:
             futures = []
-            for dest in range(1, n):  # Skip depot
-                futures.append(executor.submit(self._compute_flow_for_dest, 
-                                          conductance, dest))
+            for dest in range(1, n):
+                futures.append(executor.submit(self._compute_flow_for_dest, conductance, dest))
 
-            # Collect results safely
             for future in as_completed(futures):
                 try:
-                    flow_matrix = future.result()
-                    total_flows += flow_matrix
+                    flow = future.result()
+                    if flow is not None:
+                        total_flows += flow
                 except Exception as e:
-                    st.error(f"Error in flow computation: {str(e)}")
+                    st.error(f"Error in parallel flow computation: {str(e)}")
                     continue
 
         return total_flows.tocsr()
 
-    def _compute_flow_for_dest(self, conductance: sparse.spmatrix, dest: int) -> sparse.spmatrix:
-        """Compute flow for a single destination with dimension checks and debugging"""
+    def _compute_flow_for_dest(self, conductance: sparse.spmatrix, dest: int) -> Optional[sparse.spmatrix]:
+        """Compute flow for single destination with dimension checks"""
         n = self.n_points
 
-        # Setup linear system
-        A = conductance.tocsr()  # Ensure CSR format for efficient operations
-        st.write(f"Conductance matrix shape: {A.shape}")
-        diag = np.array(A.sum(axis=1)).flatten()
-        A = A - sparse.diags(diag)
+        # Verify conductance matrix
+        if not isinstance(conductance, sparse.spmatrix):
+            st.error("Invalid conductance matrix type")
+            return None
 
-        # Set boundary conditions
-        b = np.zeros(n)
-        b[0] = 1.0  # Source at depot
-        b[dest] = -1.0  # Sink
+        if conductance.shape != (n, n):
+            st.error(f"Conductance matrix has wrong shape: {conductance.shape}, expected: ({n}, {n})")
+            return None
 
         try:
-            # Solve system with efficient sparse solver
-            pressures = sparse.linalg.spsolve(A, b)
-            st.write(f"Pressure vector shape: {pressures.shape}")
+            # Setup linear system (maintain CSR format)
+            A = conductance.copy()
+            diag = np.array(A.sum(axis=1)).flatten()
 
-            # Calculate flows with dimension checks
-            flow_matrix = sparse.lil_matrix((n, n))
+            # Verify diagonal array shape
+            if diag.shape[0] != n:
+                st.error(f"Diagonal array has wrong shape: {diag.shape}, expected: ({n},)")
+                return None
+
+            A = A - sparse.diags(diag, format='csr')
+
+            # Set boundary conditions
+            b = np.zeros(n)
+            b[0] = 1.0
+            b[dest] = -1.0
+
+            # Use conjugate gradient solver for better performance
+            try:
+                pressures = sparse.linalg.cg(A, b, maxiter=1000)[0]
+            except sparse.linalg.LinearOperatorError:
+                # Fallback to direct solver if CG fails
+                pressures = sparse.linalg.spsolve(A, b)
+
+            # Verify pressure vector shape
+            if pressures.shape[0] != n:
+                st.error(f"Pressure vector has wrong shape: {pressures.shape}, expected: ({n},)")
+                return None
+
+            # Get nonzero indices
             rows, cols = conductance.nonzero()
 
-            # Verify matrix dimensions
-            st.write(f"Pressure indexing shapes - rows: {pressures[rows].shape}, cols: {pressures[cols].shape}")
+            # Verify indices
+            if rows.size != cols.size or rows.size == 0:
+                st.error("Invalid sparse matrix indices")
+                return None
 
-            # Ensure proper broadcasting
-            pressure_diffs = pressures[rows] - pressures[cols]
-            flows = conductance.multiply(pressure_diffs)
+            # Calculate pressure differences (verify shapes first)
+            p_rows = pressures[rows]
+            p_cols = pressures[cols]
 
-            # Convert to absolute values and assign to matrix
+            if p_rows.shape != p_cols.shape:
+                st.error(f"Pressure difference shapes mismatch: {p_rows.shape} vs {p_cols.shape}")
+                return None
+
+            # Calculate flows using sparse operations
+            flow_matrix = sparse.lil_matrix((n, n))
+            flows = conductance.multiply(p_rows - p_cols)
             flow_matrix[rows, cols] = np.abs(flows.data)
 
-            return flow_matrix
+            return flow_matrix.tocsr()
 
         except Exception as e:
-            st.error(f"Flow computation error: {str(e)}")
-            st.write(f"Debug info - Conductance nnz: {conductance.nnz}, A shape: {A.shape}")
-            raise
+            st.error(f"Flow computation failed: {str(e)}")
+            st.write(f"Debug - Matrix shapes: A={A.shape}, b={b.shape}, conductance={conductance.shape}")
+            return None
 
     def update_conductivity(self, flows: sparse.spmatrix) -> float:
-        """Update conductivity using fully vectorized operations"""
-        try:
-            # Convert to CSR for efficient operations
-            flows = flows.tocsr()
+        """Update conductivity using vectorized operations"""
+        if flows is None:
+            return 0.0
 
-            # Calculate growth and decay terms
+        try:
+            # Verify matrix shapes
+            if flows.shape != (self.n_points, self.n_points):
+                st.error(f"Flow matrix has wrong shape: {flows.shape}")
+                return 0.0
+
+            # Keep in CSR format throughout
+            flows = flows.tocsr()
             growth = flows.power(self.params.gamma)
             decay = self.conductivity_matrix.multiply(self.params.mu)
 
@@ -145,20 +200,24 @@ class PhysarumSolver:
             new_conductivity = self.conductivity_matrix + delta
 
             # Apply bounds efficiently
-            data = new_conductivity.data
-            data = np.clip(data, self.params.min_conductivity, self.params.max_conductivity)
-            new_conductivity.data = data
+            new_conductivity.data = np.clip(
+                new_conductivity.data,
+                self.params.min_conductivity,
+                self.params.max_conductivity
+            )
 
-            # Calculate maximum change
+            # Track maximum change
             max_change = np.max(np.abs(delta.data)) if delta.nnz > 0 else 0
 
-            self.conductivity_matrix = new_conductivity.tocsr()  # Keep in CSR format
+            # Update matrix (maintain CSR format)
+            self.conductivity_matrix = new_conductivity.tocsr()
+
             return max_change
 
         except Exception as e:
-            st.error(f"Conductivity update error: {str(e)}")
-            st.write(f"Debug info - Flows shape: {flows.shape}, nnz: {flows.nnz}")
-            raise
+            st.error(f"Conductivity update failed: {str(e)}")
+            st.write(f"Debug - Flows shape: {flows.shape}, nnz: {flows.nnz}")
+            return 0.0
 
     def calculate_network_cost(self) -> float:
         """Calculate total network cost"""
