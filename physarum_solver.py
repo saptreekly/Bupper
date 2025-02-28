@@ -8,7 +8,6 @@ import time
 from utils import TimeWindow
 from scipy import sparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from visualization import visualizer # Added import
 
 @dataclass
 class PhysarumParams:
@@ -356,7 +355,6 @@ class PhysarumSolver:
         try:
             log_message("Starting Physarum optimization")
             log_message(f"Problem size: {self.n_points} nodes")
-            visualizer.setup_visualization(self.points) #Added visualization setup
 
             for iteration in range(max_iterations):
                 # Update progress every 5 iterations
@@ -372,7 +370,6 @@ class PhysarumSolver:
 
                 # Update conductivity
                 max_change = self.update_conductivity(flows)
-                visualizer.update_physarum(self.conductivity_matrix.todok()) # Added visualization update
 
                 # Calculate cost (less frequently)
                 if iteration % 10 == 0:

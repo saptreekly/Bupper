@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from scipy.sparse import csr_matrix
 import numpy.ma as ma
-from visualization import visualizer
 
 @dataclass
 class SolutionMetrics:
@@ -248,8 +247,6 @@ class ACO:
 
                 # Update pheromones using vectorized operations
                 pheromone = self.update_pheromone_vectorized(pheromone, all_paths, all_costs)
-                ant_positions = [(path[-1], path[0]) for path in all_paths]
-                visualizer.update_aco(pheromone, ant_positions)
 
             # Adapt parameters
             self.adapt_parameters(iteration, best_cost, previous_best_cost, len(points))
@@ -771,8 +768,8 @@ def verify_and_fix_routes(routes: List[List[int]],
                     if current_time < tw.earliest:
                         current_time = tw.earliest
                     elif current_time > tw.latest:
-                        cost += (current_time - tw.latest) * time_penalty_multiplier
-                    current_time += tw.service_time
+                        cost += (currenttime - tw.latest) * time_penalty_multiplier
+                        current_time += tw.service_time
         return cost
 
     initial_total_cost = sum(calculate_route_cost(route) for route in routes)
@@ -846,3 +843,120 @@ def verify_and_fix_routes(routes: List[List[int]],
             st.success("All nodes verified with no cost increase")
 
     return routes
+
+def solve(self,
+         points: np.ndarray,
+         route_nodes: List[int],
+         n_iterations: int = 100,
+         time_windows: Optional[Dict[int, TimeWindow]] = None,
+         conductivities: Optional[Dict] = None,
+         demands: Optional[List[float]] = None,
+         capacity: Optional[float] = None) -> Tuple[List[int], float, Dict[int, float]]:
+    """Solve TSP/VRP with vectorized operations and parallel processing"""
+    import streamlit as st
+
+    st.write("\n=== ACO Solver Starting ===")
+    st.write(f"Number of points: {len(points)}")
+
+    # Precompute nearest neighbors
+    self.precompute_nearest_neighbors(points)
+
+    # Initialize pheromone matrix
+    n_points = len(points)
+    pheromone = self.initialize_pheromone(n_points, conductivities)
+
+    # Calculate dynamic number of ants based on problem size
+    self.n_ants = min(
+        int(self.base_ants * np.log2(n_points / 10 + 1)),
+        200  # Maximum ants cap
+    )
+
+    best_path = None
+    best_cost = float('inf')
+    best_arrival_times = {}
+    previous_best_cost = float('inf')
+    stagnation_counter = 0
+
+    # Determine optimal chunk size for parallel processing
+    chunk_size = max(1, min(self.n_ants // (self.max_parallel_ants * 2), 20))
+
+    for iteration in range(n_iterations):
+        iteration_start = time.time()
+
+        # Parallel solution construction
+        executor_class = ProcessPoolExecutor if self.n_ants > 50 else ProcessPoolExecutor
+        with executor_class(max_workers=self.max_parallel_ants) as executor:
+            # Prepare arguments for parallel processing
+            args_list = [(points, pheromone, route_nodes)] * self.n_ants
+
+            # Submit tasks in chunks
+            futures = []
+            for i in range(0, self.n_ants, chunk_size):
+                chunk_args = args_list[i:i + chunk_size]
+                futures.extend([executor.submit(self.construct_solution_parallel, args) 
+                             for args in chunk_args])
+
+            all_paths = []
+            all_costs = []
+            all_arrival_times = []
+
+            for future in as_completed(futures):
+                try:
+                    path = future.result()
+                    arrival_times = self.calculate_arrival_times(path, self.distance_matrix, time_windows)
+                    base_cost = np.sum([self.distance_matrix[path[i]][path[i+1]] 
+                                      for i in range(len(path)-1)])
+
+                    # Apply penalties if constraints are enabled
+                    penalty = 0.0
+                    if time_windows:
+                        for node, arrival in arrival_times.items():
+                            if node in time_windows:
+                                tw = time_windows[node]
+                                if arrival > tw.latest:
+                                    penalty += (arrival - tw.latest) * self.time_penalty_factor
+
+                    if demands is not None and capacity is not None:
+                        route_demand = sum(demands[i] for i in path[1:-1])
+                        if route_demand > capacity:
+                            penalty += (route_demand - capacity) * self.base_time_penalty
+
+                    total_cost = base_cost + penalty
+
+                    all_paths.append(path)
+                    all_costs.append(total_cost)
+                    all_arrival_times.append(arrival_times)
+
+                except Exception as e:
+                    st.write(f"Error in ant construction: {str(e)}")
+                    continue
+
+        if all_costs:
+            min_cost_idx = np.argmin(all_costs)
+            if all_costs[min_cost_idx] < best_cost:
+                best_path = all_paths[min_cost_idx]
+                best_cost = all_costs[min_cost_idx]
+                best_arrival_times = all_arrival_times[min_cost_idx]
+                stagnation_counter = 0
+
+                improvement = ((previous_best_cost - best_cost) / previous_best_cost 
+                            if previous_best_cost != float('inf') else 1.0)
+                if improvement > 0.05:  # Log only significant improvements
+                    st.write(f"Cost improved by {improvement*100:.1f}%")
+            else:
+                stagnation_counter += 1
+
+            previous_best_cost = best_cost
+
+            # Update pheromones using vectorized operations
+            pheromone = self.update_pheromone_vectorized(pheromone, all_paths, all_costs)
+
+        # Adapt parameters
+        self.adapt_parameters(iteration, best_cost, previous_best_cost, len(points))
+
+        # Early stopping check
+        if stagnation_counter >= self.stagnation_limit:
+            st.write(f"Stopping early due to stagnation at iteration {iteration}")
+            break
+
+    return best_path, best_cost, best_arrival_times

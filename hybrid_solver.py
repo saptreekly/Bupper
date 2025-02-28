@@ -6,7 +6,6 @@ import time
 from physarum_solver import PhysarumSolver, PhysarumParams
 from aco_solver import ACO
 from utils import TimeWindow
-from visualization import visualizer
 
 class HybridSolver:
     """Hybrid solver combining Physarum and ACO approaches with configurable constraints"""
@@ -144,10 +143,6 @@ class HybridSolver:
         log_message("Solver initialized")
         log_message(f"Time Windows: {'Enabled' if self.enable_time_windows else 'Disabled'}")
         log_message(f"Capacity Constraints: {'Enabled' if self.enable_capacity else 'Disabled'}")
-
-        visualizer.setup_visualization(self.points)
-        visualizer.render()  # Initialize visualization
-
 
         best_route = None
         best_cost = float('inf')
